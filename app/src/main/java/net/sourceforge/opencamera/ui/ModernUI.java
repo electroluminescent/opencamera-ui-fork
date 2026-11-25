@@ -198,6 +198,7 @@ public class ModernUI {
     private static final float RULER_MARGIN = 0.15f; // of the preview height, above and below the whole zoom range
     private final List<Lens> auto_chain = new ArrayList<>(); // lenses AUTO switches between, lowest zoom first
     private ImageView freeze_view;
+    private boolean quiet_rebuild; // rebuilding the lens chips after an AUTO lens switch
     private final Runnable unfreeze_runnable = this::unfreezePreview;
     private static final float SOFTWARE_ZOOM_MAX = 8.0f; // matches Preview
     private Lens auto_lens;
@@ -2311,7 +2312,7 @@ public class ModernUI {
         for(int i=1;i<auto_chain.size();i++) {
             double threshold = auto_chain.get(i).zoom;
             if( open_index >= i )
-                threshold *= 0.98;
+                threshold *= 0.95;
             if( total >= threshold )
                 target = auto_chain.get(i);
         }
@@ -2602,16 +2603,17 @@ public class ModernUI {
         syncVisibility();
         refresh(); // available modes/settings depend on the camera
 
+        quiet_rebuild = false;
         // finish an AUTO hand-off: carry the zoom level across to the newly opened camera, then
         // let the live preview show through the frozen frame
         if( !Double.isNaN(pending_total_zoom) ) {
             final double total = pending_total_zoom;
             pending_total_zoom = Double.NaN;
-            root().postDelayed(() -> {
+            root().post(() -> {
                 applyTotalZoom(total);
                 root().removeCallbacks(unfreeze_runnable);
-                root().postDelayed(unfreeze_runnable, 220);
-            }, 120);
+                root().postDelayed(unfreeze_runnable, 250);
+            });
         }
         else {
             handoff_in_progress = false;
@@ -2633,14 +2635,17 @@ public class ModernUI {
             // physical lenses only have software zoom
             float ratio = (float)Math.max(1.0, Math.min(SOFTWARE_ZOOM_MAX, total / factorOf(open)));
             preview.setSoftwareZoom(ratio);
-            preview.rebaseDragZoom(ratio);
+            preview.releaseDragZoom(ratio);
         }
         else if( preview.supportsZoom() ) {
             float min = preview.getMinZoomRatio();
             float max = preview.getZoomRatio(preview.getMaxZoom());
             float ratio = (float)Math.max(min, Math.min(max, total / factorOf(open)));
             preview.setZoomRatio(ratio);
-            preview.rebaseDragZoom(ratio);
+            preview.releaseDragZoom(ratio);
+        }
+        else {
+            preview.releaseDragZoom(1.0f);
         }
     }
 
@@ -2652,8 +2657,13 @@ public class ModernUI {
             return;
         if( MyDebug.LOG )
             Log.d(TAG, "AUTO hand-off to " + target + " at " + total);
+        Preview preview = main_activity.getPreview();
+        if( preview.isOpeningCamera() )
+            return; // the switch would be ignored
         handoff_in_progress = true;
         pending_total_zoom = total;
+        quiet_rebuild = true;
+        preview.holdDragZoom(); // until the new lens's zoom is set (applyTotalZoom)
         freezePreview();
         main_activity.userSwitchToCamera(target.logical_id, target.physical_id);
         main_activity.getApplicationInterface().getDrawPreview().setDimPreview(false);
@@ -2873,7 +2883,7 @@ public class ModernUI {
         lp.setMargins(dp(5), 0, dp(5), 0);
         lp.gravity = Gravity.CENTER_VERTICAL;
         lens_row.addView(chip, lp);
-        if( selected )
+        if( selected && !quiet_rebuild )
             pulse(chip);
     }
 

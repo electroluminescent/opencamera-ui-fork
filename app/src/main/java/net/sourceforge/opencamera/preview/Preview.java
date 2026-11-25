@@ -645,7 +645,7 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
                 if( event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL )
                     endDragZoom();
                 else
-                    drag_zoom_last_y = event.getY();
+                    bankDragZoom(event);
             }
             return true;
         }
@@ -804,7 +804,55 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
         }
     }
 
+    /** Open Camera UI Fork: while a lens switch is under way, the drag is held: finger movement
+     *  is banked and applied once the new lens's zoom is known (releaseDragZoom), so the old
+     *  lens's zoom ratio is never applied to the new lens.
+     */
+    private boolean drag_zoom_held;
+    private float drag_zoom_banked_px;
+    private float drag_zoom_last_raw_x, drag_zoom_last_raw_y;
+    private float drag_zoom_last_pixels_per_log = -1.0f;
+
+    private void bankDragZoom(MotionEvent event) {
+        drag_zoom_banked_px += drag_zoom_last_y - event.getY();
+        drag_zoom_last_y = event.getY();
+        drag_zoom_last_raw_x = event.getRawX();
+        drag_zoom_last_raw_y = event.getRawY();
+    }
+
+    /** Open Camera UI Fork: hold an active zoom drag (see drag_zoom_held). */
+    public void holdDragZoom() {
+        if( !drag_zoom_active )
+            return;
+        drag_zoom_held = true;
+        drag_zoom_banked_px = 0.0f;
+    }
+
+    /** Open Camera UI Fork: resume a held zoom drag from the given ratio of the (new) open
+     *  camera, then apply the finger movement banked while it was held.
+     */
+    public void releaseDragZoom(float ratio) {
+        boolean was_held = drag_zoom_held;
+        drag_zoom_held = false;
+        if( !drag_zoom_active || ratio <= 0.0f )
+            return;
+        drag_zoom_log = (float)Math.log(ratio);
+        drag_zoom_intent_log = drag_zoom_log;
+        if( has_zoom ) {
+            has_smooth_zoom = true;
+            smooth_zoom = ratio;
+        }
+        float banked = drag_zoom_banked_px;
+        drag_zoom_banked_px = 0.0f;
+        if( was_held && banked != 0.0f )
+            dragZoomBy(banked, drag_zoom_last_raw_x, drag_zoom_last_raw_y);
+    }
+
     private void handleDragZoom(MotionEvent event) {
+        if( drag_zoom_active && drag_zoom_held ) {
+            bankDragZoom(event);
+            return;
+        }
         boolean hardware = has_zoom && camera_controller != null && zoom_ratios != null && !zoom_ratios.isEmpty();
         boolean software = !hardware && supportsSoftwareZoom();
         if( !hardware && !software ) {
@@ -840,14 +888,29 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
             drag_zoom_precision = Math.min(DRAG_ZOOM_MAX_PRECISION, 1.0f + Math.abs(event.getX() - touch_orig_x) / (DRAG_ZOOM_PRECISION_DP * density));
             drag_zoom_precision_x = event.getX();
         }
+        float step = drag_zoom_last_y - event.getY(); // dragging up zooms in
+        drag_zoom_last_y = event.getY();
+        drag_zoom_last_raw_x = event.getRawX();
+        drag_zoom_last_raw_y = event.getRawY();
+        dragZoomBy(step, event.getRawX(), event.getRawY());
+    }
+
+    /** Open Camera UI Fork: moves an active zoom drag by step pixels (positive zooms in). */
+    private void dragZoomBy(float step, float raw_x, float raw_y) {
+        boolean hardware = has_zoom && camera_controller != null && zoom_ratios != null && !zoom_ratios.isEmpty();
+        boolean software = !hardware && supportsSoftwareZoom();
+        if( !hardware && !software )
+            return;
+        float density = getResources().getDisplayMetrics().density;
+        float min_ratio = hardware ? zoom_ratios.get(0)/100.0f : 1.0f;
+        float max_ratio = hardware ? zoom_ratios.get(max_zoom_factor)/100.0f : SOFTWARE_ZOOM_MAX;
         float precision = drag_zoom_precision;
         // the app may set the coarsest sensitivity (e.g. so the whole range fits the preview's height)
         float base_pixels_per_log = applicationInterface.getDragZoomPixelsPerLog(min_ratio, max_ratio);
         if( !(base_pixels_per_log > 0.0f) )
             base_pixels_per_log = DRAG_ZOOM_DP_PER_DOUBLING * density / (float)Math.log(2.0);
         float pixels_per_log = base_pixels_per_log * precision;
-        float step = drag_zoom_last_y - event.getY(); // dragging up zooms in
-        drag_zoom_last_y = event.getY();
+        drag_zoom_last_pixels_per_log = pixels_per_log;
         // the intent may overshoot the range a little, so the app can tell the user is pushing
         // past the end of this camera's range (used to hand off between lenses)
         float log_min = (float)Math.log(min_ratio);
@@ -873,10 +936,12 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
         else {
             setSoftwareZoom(ratio);
         }
-        applicationInterface.onDragZoom(true, event.getRawX(), event.getRawY(), ratio, (float)Math.exp(drag_zoom_intent_log), min_ratio, max_ratio, pixels_per_log, precision, software);
+        applicationInterface.onDragZoom(true, raw_x, raw_y, ratio, (float)Math.exp(drag_zoom_intent_log), min_ratio, max_ratio, pixels_per_log, precision, software);
     }
 
     private void endDragZoom() {
+        drag_zoom_held = false;
+        drag_zoom_banked_px = 0.0f;
         if( drag_zoom_active ) {
             drag_zoom_active = false;
             has_smooth_zoom = false;
