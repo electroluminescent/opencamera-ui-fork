@@ -2300,30 +2300,81 @@ public class ModernUI {
         return false;
     }
 
-    /** The lens AUTO should be using for an overall zoom (relative to the main lens) of total,
-     *  given the lens that is open: each lens from its own minimum up to the next lens's
-     *  minimum, with a little hysteresis so it doesn't flick between two lenses.
+    /** The lens AUTO uses for an overall zoom (relative to the main lens) of total: the highest
+     *  power lens whose own zoom is at or below it, so each lens covers exactly its own minimum
+     *  up to the next lens's minimum. This depends only on the zoom level (never on which lens
+     *  happens to be open), so every zoom level has exactly one lens.
      */
-    private Lens autoTargetFor(double total, Lens open) {
+    private Lens autoTargetFor(double total) {
         if( auto_chain.isEmpty() )
             return auto_lens;
-        int open_index = auto_chain.indexOf(open);
         Lens target = auto_chain.get(0);
         for(int i=1;i<auto_chain.size();i++) {
-            double threshold = auto_chain.get(i).zoom;
-            if( open_index >= i )
-                threshold *= 0.95;
-            if( total >= threshold )
+            if( total >= auto_chain.get(i).zoom )
                 target = auto_chain.get(i);
         }
         return target;
+    }
+
+    // a switch to the lens for the current zoom waits until the zoom has stayed in that lens's
+    // range for AUTO_SETTLE_MS, unless it is well inside it, so a finger resting on a boundary
+    // doesn't switch lens back and forth; the lens is always the right one once the zoom settles
+    private static final long AUTO_SETTLE_MS = 250;
+    private static final double AUTO_IMMEDIATE_MARGIN = Math.log(1.10);
+    private Lens settle_target;
+    private double settle_total = Double.NaN;
+    private double settle_lo, settle_hi;
+    private final Runnable settle_runnable = this::onAutoSettled;
+
+    /** Moves AUTO to the lens for the overall zoom total, now or once it settles. */
+    private void autoSwitchFor(double total, Lens open, double range_lo, double range_hi) {
+        Lens target = autoTargetFor(total);
+        settle_total = total;
+        settle_lo = range_lo;
+        settle_hi = range_hi;
+        if( target == null || target == open || (target.auto && open != null && open.auto) ) {
+            settle_target = null;
+            root().removeCallbacks(settle_runnable);
+            return;
+        }
+        // how far past the boundary between the open lens and the target the zoom is
+        boolean up = factorOf(target) > factorOf(open);
+        double boundary = up ? factorOf(target) : factorOf(open);
+        double past = Math.abs(Math.log(total) - Math.log(boundary));
+        if( past >= AUTO_IMMEDIATE_MARGIN ) {
+            settle_target = null;
+            root().removeCallbacks(settle_runnable);
+            handOffTo(target, open, total, range_lo, range_hi);
+        }
+        else if( settle_target != target ) {
+            settle_target = target;
+            root().removeCallbacks(settle_runnable);
+            root().postDelayed(settle_runnable, AUTO_SETTLE_MS);
+        }
+    }
+
+    private void onAutoSettled() {
+        Lens target = settle_target;
+        settle_target = null;
+        if( target == null || handoff_in_progress || Double.isNaN(settle_total) || !smartAutoActive() )
+            return;
+        Lens open = openLens();
+        if( autoTargetFor(settle_total) == target && target != open )
+            handOffTo(target, open, settle_total, settle_lo, settle_hi);
+    }
+
+    private void handOffTo(Lens target, Lens open, double total, double range_lo, double range_hi) {
+        // going up, start the new lens at no less than its own minimum
+        boolean up = factorOf(target) > factorOf(open);
+        double carried = up ? Math.max(total, factorOf(target)) : total;
+        handOff(target, Math.max(range_lo, Math.min(range_hi, carried)));
     }
 
     /** The lens AUTO opens when it is tapped. */
     private Lens autoEntryLens() {
         if( !appSwitching() || auto_chain.isEmpty() || auto_chain.get(0).auto )
             return auto_lens;
-        return autoTargetFor(1.0, null);
+        return autoTargetFor(1.0);
     }
 
     private boolean isSelected(Lens lens) {
@@ -2952,13 +3003,7 @@ public class ModernUI {
         boolean smart = smartAutoActive() && !auto_chain.isEmpty();
         if( smart && !handoff_in_progress ) {
             double intent = intent_ratio * factor;
-            Lens target = autoTargetFor(intent, open);
-            if( target != null && target != open && !(target.auto && open != null && open.auto) ) {
-                // going up, start the new lens at no less than its own minimum
-                boolean up = !target.auto && target.zoom > factor;
-                double total = Math.max(range_min, Math.min(range_max, up ? Math.max(intent, target.zoom) : intent));
-                handOff(target, total);
-            }
+            autoSwitchFor(intent, open, range_min, range_max);
         }
         if( (smart || selected_lens_auto) && !auto_lens_zooms.isEmpty() ) {
             for(int i=0;i<auto_lens_zooms.size();i++) {
