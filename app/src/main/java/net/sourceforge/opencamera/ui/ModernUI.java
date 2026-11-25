@@ -201,6 +201,9 @@ public class ModernUI {
     private static final String SMART_AUTO_KEY = "uifork_smart_auto";
     private static final String AUTO_SWITCHING_KEY = "uifork_auto_switching";
     private static final float RULER_MARGIN = 0.15f; // of the preview height, above and below the whole zoom range
+    // the whole zoom range spans this fraction of (the preview height less the margins) at the
+    // coarsest precision: 0.5 zooms twice as fast as fitting the range to the preview
+    private static final float DRAG_ZOOM_SPEED_FRACTION = 0.5f;
     private final List<Lens> auto_chain = new ArrayList<>(); // lenses AUTO switches between, lowest zoom first
     private ImageView freeze_view;
     private boolean quiet_rebuild; // rebuilding the lens chips after an AUTO lens switch
@@ -2996,7 +2999,7 @@ public class ModernUI {
         double logs = Math.log(range[1] / range[0]);
         if( span == null || !(logs > 0.05) )
             return -1.0f;
-        return (float)(span[1] * (1.0f - 2.0f*RULER_MARGIN) / logs);
+        return (float)(span[1] * (1.0f - 2.0f*RULER_MARGIN) * DRAG_ZOOM_SPEED_FRACTION / logs);
     }
 
     /** A lens's power to 1 decimal place, e.g. 0.6x, 1.0x, 2.9x. */
@@ -3245,7 +3248,8 @@ public class ModernUI {
             ruler_active = true;
             if( span != null && precision > 0.0f && current > 0.0 ) {
                 float base_pixels_per_log = pixels_per_log / precision;
-                ruler_origin_y = span[0] + span[1] * RULER_MARGIN + (float)((Math.log(range_max) - Math.log(current)) * base_pixels_per_log);
+                float range_height = (float)((Math.log(range_max) - Math.log(range_min)) * base_pixels_per_log);
+                ruler_origin_y = span[0] + (span[1] - range_height) / 2.0f + (float)((Math.log(range_max) - Math.log(current)) * base_pixels_per_log);
             }
             else {
                 ruler_origin_y = raw_y;
@@ -3299,7 +3303,7 @@ public class ModernUI {
             // the finger's band: between edge level-1 (or the centre) and edge level
             float inner = level == 0 ? 0.0f : band_edges[level - 1];
             float outer = level < band_edges.length ? band_edges[level] : -1.0f;
-            fill_paint.setColor(0x14FFFFFF);
+            fill_paint.setColor(0x0AFFFFFF);
             if( level == 0 ) {
                 canvas.drawRect(band_centre_x - outer, top, band_centre_x + outer, bottom, fill_paint);
             }
@@ -3312,7 +3316,7 @@ public class ModernUI {
             line_paint.setStrokeWidth(dp(1));
             for(int i=0;i<band_edges.length;i++) {
                 boolean current_band = i == level || i == level - 1;
-                line_paint.setColor(current_band ? 0x8CFFFFFF : 0x33FFFFFF);
+                line_paint.setColor(current_band ? 0x46FFFFFF : 0x1AFFFFFF);
                 canvas.drawLine(band_centre_x - band_edges[i], top, band_centre_x - band_edges[i], bottom, line_paint);
                 canvas.drawLine(band_centre_x + band_edges[i], top, band_centre_x + band_edges[i], bottom, line_paint);
             }

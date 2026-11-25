@@ -6,7 +6,7 @@ android {
 
     defaultConfig {
         applicationId "net.sourceforge.opencamera.uifork"
-        versionName "1.56.2-uifork.0.7.4"
+        versionName "1.56.2-uifork.0.7.5"
         minSdkVersion 23
         targetSdkVersion 36
         //compileSdkVersion 31 // needed to support appcompat:1.4.0 (which we need for emoji policy support, and not yet ready to target SDK 30)

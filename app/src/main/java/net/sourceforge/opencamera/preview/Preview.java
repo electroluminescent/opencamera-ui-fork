@@ -739,6 +739,9 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
     private static final float DRAG_ZOOM_PRECISION_DP = 32.0f; // width of each band beyond the deadzone
     private static final float DRAG_ZOOM_MAX_PRECISION = 5.0f;
     private static final float DRAG_ZOOM_PRECISION_DEADZONE_DP = 24.0f; // either side of the start
+    // once at a precision level, the finger has to come this far back inside the band's inner
+    // edge before the precision drops, so a high precision is easy to keep
+    private static final float DRAG_ZOOM_PRECISION_HOLD_DP = 20.0f;
     private float drag_zoom_precision = 1.0f;
     private float drag_zoom_precision_x; // finger x where the precision was last changed
     private boolean drag_zoom_active;
@@ -828,6 +831,10 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
         drag_zoom_last_y = event.getRawY();
         drag_zoom_last_raw_x = event.getRawX();
         drag_zoom_last_raw_y = event.getRawY();
+    }
+
+    private static int precisionLevel(float sideways, float density) {
+        return sideways <= 0.0f ? 0 : 1 + (int)(sideways / (DRAG_ZOOM_PRECISION_DP * density));
     }
 
     /** Open Camera UI Fork: screen x where the current zoom drag started. */
@@ -950,8 +957,14 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
         // vertical line), and is 1 within a deadzone around the start so the drift of a thumb
         // dragging up and down doesn't change it
         float sideways = Math.abs(event.getRawX() - drag_zoom_precision_x) - DRAG_ZOOM_PRECISION_DEADZONE_DP * density;
-        int level = sideways <= 0.0f ? 0 : 1 + (int)(sideways / (DRAG_ZOOM_PRECISION_DP * density));
-        drag_zoom_precision = Math.min(DRAG_ZOOM_MAX_PRECISION, 1.0f + level);
+        int max_level = (int)DRAG_ZOOM_MAX_PRECISION - 1;
+        int level = Math.min(max_level, precisionLevel(sideways, density));
+        int current_level = Math.round(drag_zoom_precision) - 1;
+        if( level < current_level ) {
+            // only drop once the finger is well inside the lower band
+            level = Math.max(level, Math.min(current_level, precisionLevel(sideways + DRAG_ZOOM_PRECISION_HOLD_DP * density, density)));
+        }
+        drag_zoom_precision = 1.0f + level;
         float step = drag_zoom_last_y - event.getRawY(); // dragging up zooms in
         drag_zoom_last_y = event.getRawY();
         drag_zoom_last_raw_x = event.getRawX();
