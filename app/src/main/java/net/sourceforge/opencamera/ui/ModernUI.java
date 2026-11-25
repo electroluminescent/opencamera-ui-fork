@@ -1525,11 +1525,11 @@ public class ModernUI {
             case BURST: return main_activity.supportsFastBurst();
             case EXPO_BRACKETING: return main_activity.supportsExpoBracketing();
             case FOCUS_BRACKETING: return main_activity.supportsFocusBracketing();
-            case X_AUTO: return main_activity.supportsCameraExtension(CameraExtensionCharacteristics.EXTENSION_AUTOMATIC);
-            case X_HDR: return main_activity.supportsCameraExtension(CameraExtensionCharacteristics.EXTENSION_HDR);
-            case X_NIGHT: return main_activity.supportsCameraExtension(CameraExtensionCharacteristics.EXTENSION_NIGHT);
-            case X_BOKEH: return main_activity.supportsCameraExtension(CameraExtensionCharacteristics.EXTENSION_BOKEH);
-            case X_BEAUTY: return main_activity.supportsCameraExtension(CameraExtensionCharacteristics.EXTENSION_BEAUTY);
+            case X_AUTO: return main_activity.supportsCameraExtension(CameraExtensionCharacteristics.EXTENSION_AUTOMATIC) || lensForExtension(CameraExtensionCharacteristics.EXTENSION_AUTOMATIC) != null;
+            case X_HDR: return main_activity.supportsCameraExtension(CameraExtensionCharacteristics.EXTENSION_HDR) || lensForExtension(CameraExtensionCharacteristics.EXTENSION_HDR) != null;
+            case X_NIGHT: return main_activity.supportsCameraExtension(CameraExtensionCharacteristics.EXTENSION_NIGHT) || lensForExtension(CameraExtensionCharacteristics.EXTENSION_NIGHT) != null;
+            case X_BOKEH: return main_activity.supportsCameraExtension(CameraExtensionCharacteristics.EXTENSION_BOKEH) || lensForExtension(CameraExtensionCharacteristics.EXTENSION_BOKEH) != null;
+            case X_BEAUTY: return main_activity.supportsCameraExtension(CameraExtensionCharacteristics.EXTENSION_BEAUTY) || lensForExtension(CameraExtensionCharacteristics.EXTENSION_BEAUTY) != null;
             default: return false;
         }
     }
@@ -1762,6 +1762,19 @@ public class ModernUI {
         }
         SharedPreferences sharedPreferences = prefs();
         sharedPreferences.edit().putString(PreferenceKeys.PhotoModePreferenceKey, value).apply();
+
+        int extension = extensionOf(mode);
+        if( extension >= 0 && !preview.isVideo() && !main_activity.supportsCameraExtension(extension) ) {
+            Lens target = lensForExtension(extension);
+            if( target != null && !preview.isOpeningCamera() ) {
+                // AUTO stays selected if its camera runs the extension
+                sharedPreferences.edit().putBoolean(SMART_AUTO_KEY, target == auto_lens).apply();
+                main_activity.getApplicationInterface().getDrawPreview().updateSettings();
+                main_ui.destroyPopup();
+                switchToLens(target);
+                return;
+            }
+        }
 
         String toast = str(mode.label);
         if( mode == Mode.HDR && !sharedPreferences.contains(PreferenceKeys.HDRInfoPreferenceKey) ) {
@@ -2151,6 +2164,7 @@ public class ModernUI {
         String zoom_source = "none";
         Optics optics;
         String type_name; // Ultra wide, Wide, Tele, Macro, Mono, Selfie...
+        final Set<Integer> extensions = new HashSet<>(); // Camera2 extensions (night etc) this camera supports
         String label;
         String sublabel;
 
@@ -2168,7 +2182,7 @@ public class ModernUI {
             return "Lens{logical_id=" + logical_id + ", camera2_id=" + camera2_id + ", physical_id=" + physical_id +
                     ", view_angle=" + view_angle + ", zoom=" + zoom + " (" + zoom_source + ")" +
                     (optics != null && !Double.isNaN(optics.eq35()) ? String.format(Locale.US, ", %.1fmm equiv", optics.eq35()) : "") +
-                    ", auto=" + auto + ", part_of_auto=" + part_of_auto +
+                    ", auto=" + auto + ", part_of_auto=" + part_of_auto + ", extensions=" + extensions +
                     ", label=" + label + (sublabel != null ? " " + sublabel : "") + "}";
         }
     }
@@ -2364,7 +2378,45 @@ public class ModernUI {
      *  hands off to the highest-power lens the phone doesn't use.
      */
     private boolean appSwitching() {
-        return !"phone".equals(prefs().getString(AUTO_SWITCHING_KEY, "app"));
+        return !"phone".equals(prefs().getString(AUTO_SWITCHING_KEY, "app")) && !extensionModeActive();
+    }
+
+    /** The Camera2 extension a photo mode uses, or -1. */
+    private static int extensionOf(Mode mode) {
+        switch( mode ) {
+            case X_AUTO: return CameraExtensionCharacteristics.EXTENSION_AUTOMATIC;
+            case X_HDR: return CameraExtensionCharacteristics.EXTENSION_HDR;
+            case X_NIGHT: return CameraExtensionCharacteristics.EXTENSION_NIGHT;
+            case X_BOKEH: return CameraExtensionCharacteristics.EXTENSION_BOKEH;
+            case X_BEAUTY: return CameraExtensionCharacteristics.EXTENSION_BEAUTY;
+            default: return -1;
+        }
+    }
+
+    /** Whether the photo mode in use is a camera extension (night etc). */
+    private boolean extensionModeActive() {
+        Preview preview = main_activity.getPreview();
+        return preview != null && !preview.isVideo() && extensionOf(currentMode()) >= 0;
+    }
+
+    /** A lens facing the same way that supports the extension: AUTO's camera if it does, else
+     *  the one nearest 1x. Null if none does.
+     */
+    private Lens lensForExtension(int extension) {
+        if( extension < 0 )
+            return null;
+        if( auto_lens != null && auto_lens.extensions.contains(extension) )
+            return auto_lens;
+        Lens best = null;
+        for(Lens lens : last_lenses) {
+            if( !lens.extensions.contains(extension) )
+                continue;
+            double distance = Double.isNaN(lens.zoom) ? 99.0 : Math.abs(Math.log(lens.zoom));
+            double best_distance = best == null ? Double.MAX_VALUE : Double.isNaN(best.zoom) ? 99.0 : Math.abs(Math.log(best.zoom));
+            if( distance < best_distance )
+                best = lens;
+        }
+        return best;
     }
 
     /** The open lens, from the carousel's lenses. */
@@ -2614,8 +2666,19 @@ public class ModernUI {
 
             // zoom factors are relative to the auto camera if there is one, else the first camera
             Lens reference = first_auto != null ? first_auto : (lenses.isEmpty() ? null : lenses.get(0));
-            for(Lens lens : lenses)
+            for(Lens lens : lenses) {
                 lens.optics = optics(manager, lens.physical_id != null ? lens.physical_id : lens.camera2_id);
+                // extensions only run on a whole camera, not a physical lens streamed on its own
+                if( manager != null && lens.physical_id == null && lens.camera2_id != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ) {
+                    try {
+                        CameraExtensionCharacteristics extension_characteristics = manager.getCameraExtensionCharacteristics(lens.camera2_id);
+                        lens.extensions.addAll(extension_characteristics.getSupportedExtensions());
+                    }
+                    catch(Throwable e) {
+                        MyDebug.logStackTrace(TAG, "failed to get camera extensions", e);
+                    }
+                }
+            }
             Optics ref_optics = reference != null ? reference.optics : null;
             float reference_angle = reference != null ? reference.view_angle : -1.0f;
             for(Lens lens : lenses) {
@@ -2661,7 +2724,7 @@ public class ModernUI {
                 }
                 else {
                     auto_chain.add(first_auto);
-                    if( tele_lens != null )
+                    if( tele_lens != null && !extensionModeActive() )
                         auto_chain.add(tele_lens);
                 }
             }
@@ -2701,6 +2764,13 @@ public class ModernUI {
                 }
                 else
                     lens.label = powerLabel(lens.zoom);
+            }
+            if( extensionModeActive() ) {
+                String extension_label = str(currentMode().label);
+                for(Lens lens : lenses) {
+                    if( lens.physical_id == null && isOpen(lens) )
+                        lens.sublabel = extension_label;
+                }
             }
             last_lenses.addAll(lenses);
             int chips = 0;
