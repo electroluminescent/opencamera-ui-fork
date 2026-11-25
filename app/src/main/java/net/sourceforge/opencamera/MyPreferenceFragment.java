@@ -762,6 +762,7 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
     @Override
     public void onViewCreated(View view, Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
+        applyDenseLayouts(getPreferenceScreen()); // Open Camera UI Fork
 
         if( edge_to_edge_mode ) {
             handleEdgeToEdge(view);
@@ -942,12 +943,58 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
             // Open Camera UI Fork: dense material list without dividers
             View list = fragment.getView().findViewById(android.R.id.list);
             if( list instanceof android.widget.ListView ) {
-                android.widget.ListView list_view = (android.widget.ListView)list;
+                final android.widget.ListView list_view = (android.widget.ListView)list;
                 list_view.setDivider(null);
                 list_view.setDividerHeight(0);
-                float density = fragment.getResources().getDisplayMetrics().density;
-                list_view.setPadding((int)(6 * density), (int)(4 * density), (int)(6 * density), list_view.getPaddingBottom());
+                list_view.setPadding(0, 0, 0, list_view.getPaddingBottom());
                 list_view.setClipToPadding(false);
+                // debug copy: long-press a setting to copy its key and value
+                list_view.setOnItemLongClickListener((parent, view, position, id) -> {
+                    Object item = parent.getItemAtPosition(position);
+                    if( !(item instanceof android.preference.Preference) )
+                        return false;
+                    android.app.Activity activity = fragment.getActivity();
+                    if( !(activity instanceof MainActivity) )
+                        return false;
+                    android.preference.Preference preference = (android.preference.Preference)item;
+                    StringBuilder info = new StringBuilder();
+                    info.append("key: ").append(preference.getKey()).append('\n');
+                    info.append("class: ").append(preference.getClass().getName()).append('\n');
+                    info.append("title: ").append(preference.getTitle()).append('\n');
+                    info.append("summary: ").append(preference.getSummary()).append('\n');
+                    info.append("enabled: ").append(preference.isEnabled()).append('\n');
+                    if( preference.getKey() != null ) {
+                        Object value = PreferenceManager.getDefaultSharedPreferences(activity).getAll().get(preference.getKey());
+                        info.append("stored value: ").append(value).append(value != null ? " (" + value.getClass().getSimpleName() + ")" : " (default)").append('\n');
+                    }
+                    if( preference instanceof android.preference.ListPreference ) {
+                        android.preference.ListPreference list_pref = (android.preference.ListPreference)preference;
+                        info.append("value: ").append(list_pref.getValue()).append('\n');
+                        info.append("entries: ").append(java.util.Arrays.toString(list_pref.getEntries())).append('\n');
+                        info.append("entry values: ").append(java.util.Arrays.toString(list_pref.getEntryValues())).append('\n');
+                    }
+                    return ((MainActivity)activity).getMainUI().getModernUI().copyDebugInfo("Setting " + preference.getKey(), info.toString());
+                });
+            }
+        }
+    }
+
+    /** Open Camera UI Fork: use compact rows and section headers for a denser settings screen.
+     *  Must be called before the list adapter is created (i.e., from onViewCreated()).
+     */
+    static void applyDenseLayouts(android.preference.PreferenceGroup group) {
+        if( group == null )
+            return;
+        for(int i=0;i<group.getPreferenceCount();i++) {
+            android.preference.Preference preference = group.getPreference(i);
+            if( preference instanceof android.preference.PreferenceCategory ) {
+                preference.setLayoutResource(R.layout.uifork_preference_category);
+                applyDenseLayouts((android.preference.PreferenceGroup)preference);
+            }
+            else {
+                preference.setLayoutResource(R.layout.uifork_preference);
+                if( preference instanceof android.preference.PreferenceGroup && !(preference instanceof android.preference.PreferenceScreen) )
+                    applyDenseLayouts((android.preference.PreferenceGroup)preference);
             }
         }
     }

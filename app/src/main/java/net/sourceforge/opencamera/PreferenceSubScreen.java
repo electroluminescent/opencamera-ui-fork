@@ -37,6 +37,7 @@ public class PreferenceSubScreen extends PreferenceFragment implements SharedPre
     @Override
     public void onViewCreated(View view, Bundle savedInstanceState) {
         super.onViewCreated(view, savedInstanceState);
+        MyPreferenceFragment.applyDenseLayouts(getPreferenceScreen()); // Open Camera UI Fork
 
         if( edge_to_edge_mode ) {
             MyPreferenceFragment.handleEdgeToEdge(view);

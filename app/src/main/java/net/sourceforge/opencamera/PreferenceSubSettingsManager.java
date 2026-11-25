@@ -191,10 +191,10 @@ public class PreferenceSubSettingsManager extends PreferenceSubScreen {
                 if( MyDebug.LOG )
                     Log.d(TAG, "user confirmed to restore settings");
                 MainActivity main_activity = (MainActivity)PreferenceSubSettingsManager.this.getActivity();
-				/*if( main_activity.getStorageUtils().isUsingSAF() ) {
-					main_activity.openLoadSettingsChooserDialogSAF(true);
-				}
-				else*/ {
+                // Open Camera UI Fork: use the system file picker, so a settings file can be
+                // restored from anywhere (Downloads, cloud drives, other apps' folders...)
+                main_activity.openLoadSettingsChooserDialogSAF(true);
+				if( false ) {
                     FolderChooserDialog fragment = new PreferenceSubSettingsManager.LoadSettingsFileChooserDialog();
                     fragment.setShowDCIMShortcut(false);
                     fragment.setShowNewFolderButton(false);

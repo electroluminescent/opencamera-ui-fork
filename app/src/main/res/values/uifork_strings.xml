@@ -34,7 +34,11 @@
     <string name="uifork_unpinned">Not pinned</string>
     <string name="uifork_edit">Edit</string>
     <string name="uifork_done">Done</string>
-    <string name="uifork_edit_hint">Tap to pin or unpin</string>
+    <string name="uifork_edit_hint">Tap to pin or unpin · hold and drag a pinned item to reorder</string>
+    <string name="uifork_settings_category">Open Camera UI Fork</string>
+    <string name="uifork_debug_copy">Debug copy</string>
+    <string name="uifork_debug_copy_summary">Long-press a lens, mode, control or setting to copy all its debug info to the clipboard</string>
+    <string name="uifork_debug_copied">Debug info copied</string>
     <string name="uifork_lens">Lens</string>
     <string name="uifork_lens_auto">AUTO</string>
     <string name="uifork_digital">digital</string>

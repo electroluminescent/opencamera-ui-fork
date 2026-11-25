@@ -4435,7 +4435,8 @@ public class MainActivity extends AppCompatActivity implements PreferenceFragmen
         this.saf_dialog_from_preferences = from_preferences;
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("text/xml"); // note that application/xml doesn't work (can't select the xml files)!
+        // Open Camera UI Fork: allow any file - many file providers don't label .xml as text/xml
+        intent.setType("*/*");
         try {
             startActivityForResult(intent, CHOOSE_LOAD_SETTINGS_SAF_CODE);
         }
@@ -4591,18 +4592,21 @@ public class MainActivity extends AppCompatActivity implements PreferenceFragmen
                     final int takeFlags = resultData.getFlags()
                             & (Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     try {
-					/*if( true )
-						throw new SecurityException(); // test*/
-                        // Check for the freshest data.
                         // WrongConstant seems to be spurious, possibly due to not knowing what resultData.getFlags() might contain -
                         // this code matches Google's documentation!
                         //noinspection WrongConstant
                         getContentResolver().takePersistableUriPermission(fileUri, takeFlags);
-
+                    }
+                    catch(SecurityException e) {
+                        // Open Camera UI Fork: not every provider grants persistable permissions,
+                        // but we only need to read the file once, now
+                        MyDebug.logStackTrace(TAG, "SecurityException failed to take persistable permission", e);
+                    }
+                    try {
                         settingsManager.loadSettings(fileUri);
                     }
                     catch(SecurityException e) {
-                        MyDebug.logStackTrace(TAG, "SecurityException failed to take permission", e);
+                        MyDebug.logStackTrace(TAG, "SecurityException reading settings file", e);
                         preview.showToast(null, R.string.restore_settings_failed);
                     }
                 }
