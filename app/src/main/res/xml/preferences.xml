@@ -74,6 +74,15 @@
             android:summary="@string/uifork_debug_copy_summary"
             android:defaultValue="true"
             />
+
+        <ListPreference
+            android:key="uifork_lens_labels"
+            android:title="@string/uifork_lens_labels"
+            android:summary="@string/uifork_lens_labels_summary"
+            android:entries="@array/uifork_lens_labels_entries"
+            android:entryValues="@array/uifork_lens_labels_values"
+            android:defaultValue="names"
+            />
     </PreferenceCategory>
 
     <PreferenceCategory

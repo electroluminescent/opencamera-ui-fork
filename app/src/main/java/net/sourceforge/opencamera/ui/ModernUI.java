@@ -2049,6 +2049,9 @@ public class ModernUI {
         final boolean auto;
         final boolean part_of_auto;
         double zoom = Double.NaN;
+        String zoom_source = "none";
+        Optics optics;
+        String type_name; // Ultra wide, Wide, Tele, Macro, Mono, Selfie...
         String label;
         String sublabel;
 
@@ -2064,9 +2067,160 @@ public class ModernUI {
         @Override
         public String toString() {
             return "Lens{logical_id=" + logical_id + ", camera2_id=" + camera2_id + ", physical_id=" + physical_id +
-                    ", view_angle=" + view_angle + ", zoom=" + zoom + ", auto=" + auto + ", part_of_auto=" + part_of_auto +
+                    ", view_angle=" + view_angle + ", zoom=" + zoom + " (" + zoom_source + ")" +
+                    (optics != null && !Double.isNaN(optics.eq35()) ? String.format(Locale.US, ", %.1fmm equiv", optics.eq35()) : "") +
+                    ", auto=" + auto + ", part_of_auto=" + part_of_auto +
                     ", label=" + label + (sublabel != null ? " " + sublabel : "") + "}";
         }
+    }
+
+    /** Optics of a camera or physical lens, from its sensor and lens data: the focal length
+     *  relative to the width of the 4:3 area of the sensor that photos are taken from. Ratios of
+     *  this between lenses give their zoom factors, allowing for sensors of different sizes and
+     *  shapes and for pixels outside the active area (unlike a plain view angle, which uses the
+     *  whole sensor width).
+     */
+    static final class Optics {
+        double focal_mm = Double.NaN;
+        double crop_width_mm = Double.NaN;
+        double norm_mm = Double.NaN; // focal length / crop width, from millimetres
+        double norm_intrinsic = Double.NaN; // focal length / crop width, from the calibrated focal length in pixels
+        boolean front;
+        float min_focus_diopters = -1.0f; // 0 = fixed focus
+        float hyperfocal_diopters = -1.0f;
+        boolean mono;
+        double max_mp = Double.NaN;
+        String summary = "";
+
+        boolean fixedFocus() {
+            return min_focus_diopters == 0.0f;
+        }
+
+        /** A dedicated close-up camera: fixed focus set close, or a low resolution lens that
+         *  focuses within 5cm (ultra wides that also focus close are not macro cameras).
+         */
+        boolean macro(double zoom) {
+            if( fixedFocus() && hyperfocal_diopters >= 10.0f )
+                return true;
+            return min_focus_diopters >= 20.0f && !Double.isNaN(max_mp) && max_mp <= 5.5 && (Double.isNaN(zoom) || zoom >= 0.8);
+        }
+
+        double norm() {
+            return !Double.isNaN(norm_intrinsic) ? norm_intrinsic : norm_mm;
+        }
+
+        String source() {
+            return !Double.isNaN(norm_intrinsic) ? "calibration" : !Double.isNaN(norm_mm) ? "focal length/sensor size" : "none";
+        }
+
+        /** 35mm-equivalent focal length (by diagonal) for 4:3 photos. */
+        double eq35() {
+            double norm = norm();
+            return Double.isNaN(norm) ? Double.NaN : norm * 43.27 / 1.25;
+        }
+    }
+
+    private static final String LENS_LABELS_KEY = "uifork_lens_labels";
+
+    /** Camera2 has no lens name, so the type is worked out from the lens's data: colour filter
+     *  (mono), focus range and resolution (macro), and zoom factor (ultra wide/wide/tele).
+     */
+    private String lensTypeName(Lens lens) {
+        Optics o = lens.optics;
+        if( o != null && o.mono )
+            return str(R.string.uifork_lens_mono);
+        if( o != null && o.macro(lens.zoom) )
+            return str(R.string.uifork_lens_macro);
+        if( Double.isNaN(lens.zoom) )
+            return null;
+        if( o != null && o.front )
+            return str(lens.zoom < 0.8 ? R.string.uifork_lens_wide_selfie : R.string.uifork_lens_selfie);
+        if( lens.zoom < 0.8 )
+            return str(R.string.uifork_lens_ultra_wide);
+        if( lens.zoom < 1.4 )
+            return str(R.string.uifork_lens_wide);
+        return str(R.string.uifork_lens_tele);
+    }
+
+    /** Width of the largest 4:3 area of a width x height area. */
+    private static double cropWidth43(double width, double height) {
+        return width / height > 4.0/3.0 ? height * 4.0/3.0 : width;
+    }
+
+    static Optics optics(CameraManager manager, String camera_id) {
+        Optics optics = new Optics();
+        if( manager == null || camera_id == null )
+            return optics;
+        StringBuilder sb = new StringBuilder();
+        try {
+            CameraCharacteristics characteristics = manager.getCameraCharacteristics(camera_id);
+            float [] focals = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS);
+            android.util.SizeF physical = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE);
+            android.util.Size pixel_array = characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE);
+            android.graphics.Rect active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+            android.graphics.Rect pre_correction = null;
+            float [] intrinsic = null;
+            if( Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ) {
+                pre_correction = characteristics.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE);
+                intrinsic = characteristics.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION);
+            }
+            if( focals != null && focals.length > 0 )
+                optics.focal_mm = focals[0];
+            Integer facing = characteristics.get(CameraCharacteristics.LENS_FACING);
+            optics.front = facing != null && facing == CameraCharacteristics.LENS_FACING_FRONT;
+            Float min_focus = characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+            Float hyperfocal = characteristics.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE);
+            if( min_focus != null )
+                optics.min_focus_diopters = min_focus;
+            if( hyperfocal != null )
+                optics.hyperfocal_diopters = hyperfocal;
+            if( Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ) {
+                Integer cfa = characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT);
+                optics.mono = cfa != null && (cfa == CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_MONO || cfa == CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT_NIR);
+            }
+            android.hardware.camera2.params.StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            android.util.Size [] jpeg = map != null ? map.getOutputSizes(android.graphics.ImageFormat.JPEG) : null;
+            if( jpeg != null ) {
+                for(android.util.Size size : jpeg)
+                    optics.max_mp = Double.isNaN(optics.max_mp) ? size.getWidth()*(double)size.getHeight()/1.0e6 : Math.max(optics.max_mp, size.getWidth()*(double)size.getHeight()/1.0e6);
+            }
+            sb.append(String.format(Locale.US, "facing front %b, minimum focus %.2f dioptres (%s), hyperfocal %.2f dioptres, mono %b, largest JPEG %.1f MP\n",
+                    optics.front, optics.min_focus_diopters,
+                    optics.fixedFocus() ? "fixed focus" : optics.min_focus_diopters > 0.0f ? String.format(Locale.US, "%.1f cm", 100.0f/optics.min_focus_diopters) : "unknown",
+                    optics.hyperfocal_diopters, optics.mono, optics.max_mp));
+            sb.append("focal lengths: ").append(java.util.Arrays.toString(focals)).append(" mm\n");
+            sb.append("sensor physical size: ").append(physical).append(" mm, pixel array ").append(pixel_array)
+                    .append(", active array ").append(active).append(", pre-correction active array ").append(pre_correction).append('\n');
+            if( physical != null && pixel_array != null && active != null && pixel_array.getWidth() > 0 ) {
+                double mm_per_pixel = physical.getWidth() / (double)pixel_array.getWidth();
+                optics.crop_width_mm = cropWidth43(active.width(), active.height()) * mm_per_pixel;
+                double diagonal = Math.hypot(physical.getWidth(), physical.getHeight());
+                sb.append(String.format(Locale.US, "sensor diagonal %.2f mm (type ~1/%.2f\"), pixel pitch %.3f um, 4:3 crop width %.2f mm\n",
+                        diagonal, 16.0/diagonal, mm_per_pixel*1000.0, optics.crop_width_mm));
+                if( !Double.isNaN(optics.focal_mm) && optics.crop_width_mm > 0.0 )
+                    optics.norm_mm = optics.focal_mm / optics.crop_width_mm;
+            }
+            sb.append("lens intrinsic calibration [fx, fy, cx, cy, s]: ").append(java.util.Arrays.toString(intrinsic)).append('\n');
+            if( intrinsic != null && intrinsic.length >= 2 && intrinsic[0] > 0.0f ) {
+                android.graphics.Rect frame = pre_correction != null ? pre_correction : active;
+                if( frame != null && frame.width() > 0 ) {
+                    double norm = intrinsic[0] / cropWidth43(frame.width(), frame.height());
+                    if( !Double.isNaN(optics.norm_mm) && Math.abs(norm/optics.norm_mm - 1.0) > 0.25 ) {
+                        sb.append(String.format(Locale.US, "calibrated focal length (%.4f) disagrees with focal length/sensor size (%.4f) by over 25%% - not used\n", norm, optics.norm_mm));
+                    }
+                    else {
+                        optics.norm_intrinsic = norm;
+                    }
+                }
+            }
+            sb.append(String.format(Locale.US, "focal/4:3 width: from mm %.4f, from calibration %.4f -> using %s; 35mm equivalent %.1f mm\n",
+                    optics.norm_mm, optics.norm_intrinsic, optics.source(), optics.eq35()));
+        }
+        catch(Throwable e) {
+            sb.append("failed: ").append(e).append('\n');
+        }
+        optics.summary = sb.toString();
+        return optics;
     }
 
     private float viewAngle(String camera_id) {
@@ -2180,6 +2334,18 @@ public class ModernUI {
         for(Lens other : last_lenses)
             sb.append("  ").append(other).append('\n');
         String id = lens.physical_id != null ? lens.physical_id : lens.camera2_id;
+        sb.append("\n--- optics (zoom factors relative to ").append(auto_lens != null ? "the AUTO camera" : "the first camera").append(") ---\n");
+        for(Lens other : last_lenses) {
+            double view_angle_zoom = Double.NaN;
+            Lens ref = auto_lens != null ? auto_lens : (last_lenses.isEmpty() ? null : last_lenses.get(0));
+            if( ref != null && ref.view_angle > 0.0f && other.view_angle > 0.0f )
+                view_angle_zoom = Math.tan(Math.toRadians(ref.view_angle)/2.0) / Math.tan(Math.toRadians(other.view_angle)/2.0);
+            sb.append(String.format(Locale.US, "  %s%s [type %s]: %.3fx via %s (view angle alone: %.3fx), %.1fmm equiv\n",
+                    other.label, other.sublabel != null ? " " + other.sublabel : "", other.type_name, other.zoom, other.zoom_source, view_angle_zoom,
+                    other.optics != null ? other.optics.eq35() : Double.NaN));
+        }
+        if( lens.optics != null )
+            sb.append(lens.optics.summary);
         sb.append('\n').append(resolutionSummary(id));
         sb.append("\n--- characteristics of ").append(lens.physical_id != null ? "physical " + lens.physical_id : "camera " + lens.camera2_id).append(" ---\n");
         sb.append(characteristicsDump(id));
@@ -2237,10 +2403,25 @@ public class ModernUI {
 
             // zoom factors are relative to the auto camera if there is one, else the first camera
             Lens reference = first_auto != null ? first_auto : (lenses.isEmpty() ? null : lenses.get(0));
+            for(Lens lens : lenses)
+                lens.optics = optics(manager, lens.physical_id != null ? lens.physical_id : lens.camera2_id);
+            Optics ref_optics = reference != null ? reference.optics : null;
             float reference_angle = reference != null ? reference.view_angle : -1.0f;
             for(Lens lens : lenses) {
-                if( reference_angle > 0.0f && lens.view_angle > 0.0f ) {
+                // use the same measure for both lenses: calibrated focal lengths, else focal
+                // length/sensor size, else (as stock Open Camera) the horizontal view angle
+                Optics o = lens.optics;
+                if( ref_optics != null && o != null && !Double.isNaN(ref_optics.norm_intrinsic) && !Double.isNaN(o.norm_intrinsic) ) {
+                    lens.zoom = o.norm_intrinsic / ref_optics.norm_intrinsic;
+                    lens.zoom_source = "calibration";
+                }
+                else if( ref_optics != null && o != null && !Double.isNaN(ref_optics.norm_mm) && !Double.isNaN(o.norm_mm) ) {
+                    lens.zoom = o.norm_mm / ref_optics.norm_mm;
+                    lens.zoom_source = "focal length/sensor size";
+                }
+                else if( reference_angle > 0.0f && lens.view_angle > 0.0f ) {
                     lens.zoom = Math.tan(Math.toRadians(reference_angle)/2.0) / Math.tan(Math.toRadians(lens.view_angle)/2.0);
+                    lens.zoom_source = "view angle";
                 }
             }
 
@@ -2272,10 +2453,25 @@ public class ModernUI {
                 return Boolean.compare(!a.part_of_auto, !b.part_of_auto);
             });
 
+            // names (Ultra wide, Tele, Macro...) where the lens's type can be told from its data;
+            // lenses sharing a name (e.g. two telephotos) also show their zoom
+            boolean names = !"zoom".equals(prefs().getString(LENS_LABELS_KEY, "names"));
+            Map<String, Set<String>> name_zooms = new HashMap<>();
+            for(Lens lens : lenses) {
+                lens.type_name = lens.auto ? null : lensTypeName(lens);
+                if( lens.type_name != null ) {
+                    Set<String> zooms = name_zooms.get(lens.type_name);
+                    if( zooms == null )
+                        name_zooms.put(lens.type_name, zooms = new java.util.HashSet<>());
+                    zooms.add(Double.isNaN(lens.zoom) ? "?" : zoomLabel(lens.zoom));
+                }
+            }
             Map<String, Integer> label_counts = new HashMap<>();
             for(Lens lens : lenses) {
                 if( lens.auto )
                     lens.label = str(R.string.uifork_lens_auto);
+                else if( names && lens.type_name != null )
+                    lens.label = name_zooms.get(lens.type_name).size() > 1 && !Double.isNaN(lens.zoom) ? lens.type_name + " " + zoomLabel(lens.zoom) : lens.type_name;
                 else if( Double.isNaN(lens.zoom) )
                     lens.label = String.valueOf(lens.logical_id);
                 else
@@ -2443,11 +2639,11 @@ public class ModernUI {
         chip.setTextSize(TypedValue.COMPLEX_UNIT_SP, selected ? 13 : 12);
         chip.setTypeface(selected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
         chip.setTextColor(selected ? Color.BLACK : Color.WHITE);
-        boolean wide = lens.sublabel != null;
+        boolean wide = lens.sublabel != null || lens.label.length() > 4;
         chip.setBackground(wide ? roundedRect(selected ? CHIP_SELECTED_COLOR : CHIP_COLOR, dp(999)) : oval(selected ? CHIP_SELECTED_COLOR : CHIP_COLOR));
         if( wide )
             chip.setPadding(dp(10), 0, dp(10), 0);
-        chip.setContentDescription(str(R.string.uifork_lens) + " " + lens.label + (wide ? " " + lens.sublabel : ""));
+        chip.setContentDescription(str(R.string.uifork_lens) + " " + lens.label + (lens.sublabel != null ? " " + lens.sublabel : ""));
         chip.setSelected(selected);
         addPressAnimation(chip);
         chip.setOnClickListener(v -> {
@@ -2466,7 +2662,7 @@ public class ModernUI {
             }
             switchToLens(lens);
         });
-        attachDebug(chip, "Lens " + lens.label + (wide ? " " + lens.sublabel : ""), () -> lensDebug(lens));
+        attachDebug(chip, "Lens " + lens.label + (lens.sublabel != null ? " " + lens.sublabel : ""), () -> lensDebug(lens));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(wide ? ViewGroup.LayoutParams.WRAP_CONTENT : dp(42), dp(42));
         if( wide )
             chip.setMinWidth(dp(42));
