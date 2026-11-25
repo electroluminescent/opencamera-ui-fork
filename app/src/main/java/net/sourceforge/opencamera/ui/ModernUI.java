@@ -2679,44 +2679,29 @@ public class ModernUI {
                 int compare = Double.compare(a.zoom, b.zoom);
                 if( compare != 0 )
                     return compare;
-                // same zoom: lenses of the multi-camera first, then standalone cameras
-                return Boolean.compare(!a.part_of_auto, !b.part_of_auto);
+                // exactly the same power: lenses of the multi-camera first, then standalone cameras
+                compare = Boolean.compare(!a.part_of_auto, !b.part_of_auto);
+                return compare != 0 ? compare : Integer.compare(a.logical_id, b.logical_id);
             });
 
-            // names (Ultra wide, Tele, Macro...) where the lens's type can be told from its data;
-            // lenses sharing a name (e.g. two telephotos) also show their zoom
+            // every lens chip is the same design: its name (Ultra wide, Wide, Tele, Macro...,
+            // worked out from the lens's data) over its exact power to 1 decimal place (from the
+            // sensor and lens data); with zoom labels, or no name, just the power
             boolean names = !"zoom".equals(prefs().getString(LENS_LABELS_KEY, "names"));
-            Map<String, Set<String>> name_zooms = new HashMap<>();
             for(Lens lens : lenses) {
                 lens.type_name = lens.auto ? null : lensTypeName(lens);
-                if( lens.type_name != null ) {
-                    Set<String> zooms = name_zooms.get(lens.type_name);
-                    if( zooms == null )
-                        name_zooms.put(lens.type_name, zooms = new java.util.HashSet<>());
-                    zooms.add(Double.isNaN(lens.zoom) ? "?" : zoomLabel(lens.zoom));
-                }
-            }
-            Map<String, Integer> label_counts = new HashMap<>();
-            for(Lens lens : lenses) {
+                lens.sublabel = null;
                 if( lens.auto )
                     lens.label = str(R.string.uifork_lens_auto);
-                else if( names && lens.type_name != null )
-                    lens.label = name_zooms.get(lens.type_name).size() > 1 && !Double.isNaN(lens.zoom) ? lens.type_name + " " + zoomLabel(lens.zoom) : lens.type_name;
                 else if( Double.isNaN(lens.zoom) )
-                    lens.label = String.valueOf(lens.logical_id);
-                else
-                    lens.label = zoomLabel(lens.zoom);
-                Integer count = label_counts.get(lens.label);
-                label_counts.put(lens.label, count == null ? 1 : count + 1);
-            }
-            for(Lens lens : lenses) {
-                Integer count = label_counts.get(lens.label);
-                if( !lens.auto && count != null && count > 1 ) {
-                    // e.g. an ultra-wide exposed both as camera 2 and as a lens of camera 0
-                    lens.sublabel = lens.physical_id != null ? "lens " + lens.physical_id : "cam " + lens.camera2_id;
+                    lens.label = names && lens.type_name != null ? lens.type_name : String.valueOf(lens.logical_id);
+                else if( names && lens.type_name != null ) {
+                    lens.label = lens.type_name;
+                    lens.sublabel = powerLabel(lens.zoom);
                 }
+                else
+                    lens.label = powerLabel(lens.zoom);
             }
-
             last_lenses.addAll(lenses);
             int chips = 0;
             if( !preview.isVideo() && main_activity.getApplicationInterface().getPhotoMode() != MyApplicationInterface.PhotoMode.Panorama ) {
@@ -2935,6 +2920,11 @@ public class ModernUI {
         if( span == null || !(logs > 0.05) )
             return -1.0f;
         return (float)(span[1] * (1.0f - 2.0f*RULER_MARGIN) / logs);
+    }
+
+    /** A lens's power to 1 decimal place, e.g. 0.6x, 1.0x, 2.9x. */
+    static String powerLabel(double zoom) {
+        return String.format(Locale.US, "%.1f\u00D7", zoom);
     }
 
     static String zoomLabel(double zoom) {
