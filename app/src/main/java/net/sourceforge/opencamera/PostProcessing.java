@@ -534,8 +534,8 @@ public class PostProcessing {
             return bitmap;
         final int long_edge = Math.max(width, height);
         final int target_long = request.output_long_edge > 0 ? request.output_long_edge : long_edge;
-        if( zoom == 1.0f && target_long >= long_edge * 0.98f ) {
-            // nothing to do - never upscale an unzoomed photo
+        if( zoom == 1.0f && Math.abs(target_long - long_edge) <= long_edge * 0.02f ) {
+            // already at the output size
             return bitmap;
         }
 

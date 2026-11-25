@@ -28,8 +28,11 @@ import android.util.Log;
 import android.util.TypedValue;
 import android.view.DragEvent;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
+import androidx.core.view.WindowInsetsCompat;
 import android.view.animation.DecelerateInterpolator;
 import android.view.animation.OvershootInterpolator;
 import android.widget.FrameLayout;
@@ -187,6 +190,23 @@ public class ModernUI {
 
     private ZoomScaleView zoom_scale;
 
+    // smart AUTO: the auto (logical multi-camera) lens doesn't necessarily use every lens (e.g.
+    // Samsung's driver doesn't use the 5x telephoto for other apps), so AUTO hands off to the
+    // highest-power lens itself, with software zoom on top
+    private static final String SMART_AUTO_KEY = "uifork_smart_auto";
+    private static final float SOFTWARE_ZOOM_MAX = 8.0f; // matches Preview
+    private Lens auto_lens;
+    private Lens tele_lens;
+    private double auto_min_ratio = Double.NaN;
+    private double pending_total_zoom = Double.NaN;
+    private boolean handoff_in_progress;
+
+    private int stock_navigation_gap;
+    private boolean mode_scroll_touching;
+    private int mode_scroll_down_x;
+    private boolean mode_scroll_programmatic;
+    private final Runnable mode_scroll_settle = this::onModeScrollSettled;
+
     ModernUI(MainActivity main_activity, MainUI main_ui) {
         this.main_activity = main_activity;
         this.main_ui = main_ui;
@@ -232,7 +252,8 @@ public class ModernUI {
     void apply(boolean portrait, int navigation_gap) {
         createViewsIfNeeded();
         this.portrait_active = portrait;
-        this.last_navigation_gap = navigation_gap;
+        this.stock_navigation_gap = navigation_gap;
+        this.last_navigation_gap = navigationGap();
         hideZoomSlider();
         styleTopRow();
         positionPreview(portrait);
@@ -336,6 +357,22 @@ public class ModernUI {
         if( width <= 0 )
             width = main_activity.getResources().getDisplayMetrics().widthPixels;
         return width;
+    }
+
+    /** How much of the bottom of our layout is covered by the navigation bar right now. Uses the
+     *  live window insets, so a collapsed/hidden navigation bar gives its space back.
+     */
+    private int navigationGap() {
+        View root = root();
+        WindowInsets insets = root.getRootWindowInsets();
+        if( insets == null )
+            return stock_navigation_gap;
+        int bottom = WindowInsetsCompat.toWindowInsetsCompat(insets, root).getInsets(WindowInsetsCompat.Type.navigationBars()).bottom;
+        int [] location = new int[2];
+        root.getLocationOnScreen(location);
+        int window_height = root.getRootView().getHeight();
+        int below_root = Math.max(0, window_height - (location[1] + root.getHeight()));
+        return Math.max(0, bottom - below_root);
     }
 
     private int rootHeight() {
@@ -581,6 +618,26 @@ public class ModernUI {
         mode_row.setGravity(Gravity.CENTER_VERTICAL);
         mode_row.setLayoutTransition(newLayoutTransition());
         mode_scroll.addView(mode_row, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // scrolling the carousel selects whichever mode ends up in the centre
+        mode_scroll.setOnTouchListener((v, event) -> {
+            int action = event.getActionMasked();
+            if( action == MotionEvent.ACTION_DOWN )
+                mode_scroll_down_x = mode_scroll.getScrollX();
+            mode_scroll_touching = action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL;
+            if( !mode_scroll_touching && Math.abs(mode_scroll.getScrollX() - mode_scroll_down_x) > dp(4) ) {
+                // the user scrolled (rather than tapped a mode)
+                mode_scroll_programmatic = false;
+                mode_scroll.removeCallbacks(mode_scroll_settle);
+                mode_scroll.postDelayed(mode_scroll_settle, 180);
+            }
+            return false;
+        });
+        mode_scroll.setOnScrollChangeListener((v, x, y, old_x, old_y) -> {
+            if( mode_scroll_programmatic || mode_scroll_touching )
+                return;
+            mode_scroll.removeCallbacks(mode_scroll_settle);
+            mode_scroll.postDelayed(mode_scroll_settle, 180);
+        });
         root.addView(mode_scroll, insert_index++, new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
 
         // pin/unpin sheet for quick settings and photo modes
@@ -672,8 +729,15 @@ public class ModernUI {
         setVisibility(quick_bar, settings);
         if( settings != View.VISIBLE )
             closeChooser();
-        if( portrait_active )
+        if( portrait_active ) {
             layoutTopRow(); // only re-lays out if the set of visible chips changed
+            // reclaim (or give back) the navigation bar's space when it is collapsed or shown
+            int gap = navigationGap();
+            if( Math.abs(gap - last_navigation_gap) > 1 ) {
+                last_navigation_gap = gap;
+                layoutPortrait();
+            }
+        }
     }
 
     // ---------------------------------------------------------------- debug copy
@@ -1363,7 +1427,7 @@ public class ModernUI {
             }
             for(final String label : order) {
                 final CameraController.Size size = best_for_aspect.get(label);
-                addChooserItem(label, 0, label.equals(current_aspect), label, size.width + "x" + size.height, v -> selectOutputSize(size));
+                addChooserItem(label, 0, label.equals(current_aspect), label, size.width + "x" + size.height, v -> selectOutputSize(size, false));
             }
         }
         else {
@@ -1380,12 +1444,14 @@ public class ModernUI {
                     label = label + " " + Math.max(size.width, size.height);
                 used.add(label);
                 boolean selected = size.width == current.width && size.height == current.height;
-                addChooserItem(label, 0, selected, size.width + " x " + size.height, size.width + "x" + size.height, v -> selectOutputSize(size));
+                addChooserItem(label, 0, selected, size.width + " x " + size.height, size.width + "x" + size.height, v -> selectOutputSize(size, true));
             }
         }
     }
 
-    private void selectOutputSize(CameraController.Size size) {
+    private void selectOutputSize(CameraController.Size size, boolean exact) {
+        if( exact ) // picking a specific resolution switches off the 8M/24M/MAX preset
+            prefs().edit().putString(MyApplicationInterface.OutputPresetPreferenceKey, "custom").apply();
         Preview preview = main_activity.getPreview();
         String key = PreferenceKeys.getResolutionPreferenceKey(preview.getCameraId(), main_activity.getApplicationInterface().getCameraIdSPhysicalPref());
         prefs().edit().putString(key, size.width + " " + size.height).apply();
@@ -1516,14 +1582,49 @@ public class ModernUI {
                     animateTextColor(tab, selected ? Color.WHITE : TAB_INACTIVE_COLOR);
             }
             last_selected_mode = current;
-            final TextView selected_view = mode_views.get(current);
-            if( selected_view != null ) {
-                // centre the current mode
-                mode_scroll.post(() -> {
-                    int x = selected_view.getLeft() + selected_view.getWidth()/2 - mode_scroll.getWidth()/2;
-                    mode_scroll.smoothScrollTo(Math.max(0, x), 0);
-                });
+            centreMode(current);
+        }
+    }
+
+    /** Scrolls the carousel so the given mode is in the centre. */
+    private void centreMode(Mode mode) {
+        final TextView view = mode_views.get(mode);
+        if( view == null )
+            return;
+        mode_scroll.post(() -> {
+            int x = view.getLeft() + view.getWidth()/2 - mode_scroll.getWidth()/2;
+            if( Math.abs(mode_scroll.getScrollX() - x) < 2 )
+                return;
+            mode_scroll_programmatic = true;
+            mode_scroll.smoothScrollTo(Math.max(0, x), 0);
+            mode_scroll.postDelayed(() -> mode_scroll_programmatic = false, 450);
+        });
+    }
+
+    /** Called once the user has stopped scrolling the carousel: activate the centred mode. */
+    private void onModeScrollSettled() {
+        if( mode_scroll_touching || mode_views.isEmpty() )
+            return;
+        int centre = mode_scroll.getScrollX() + mode_scroll.getWidth()/2;
+        Mode nearest = null;
+        int nearest_distance = Integer.MAX_VALUE;
+        for(Map.Entry<Mode, TextView> entry : mode_views.entrySet()) {
+            View view = entry.getValue();
+            int distance = Math.abs(view.getLeft() + view.getWidth()/2 - centre);
+            if( distance < nearest_distance ) {
+                nearest_distance = distance;
+                nearest = entry.getKey();
             }
+        }
+        if( nearest == null )
+            return;
+        Preview preview = main_activity.getPreview();
+        if( nearest != currentMode() && preview != null && !preview.isVideoRecording() && !preview.isOpeningCamera() ) {
+            pulse(mode_views.get(nearest));
+            selectMode(nearest);
+        }
+        else {
+            centreMode(nearest == currentMode() ? nearest : currentMode());
         }
     }
 
@@ -1991,26 +2092,97 @@ public class ModernUI {
         }
     }
 
-    private boolean isSelected(Lens lens) {
+    private boolean smartAutoPref() {
+        return prefs().getBoolean(SMART_AUTO_KEY, true);
+    }
+
+    /** Whether this lens is the camera that is open right now. */
+    private boolean isOpen(Lens lens) {
+        if( lens == null )
+            return false;
         Preview preview = main_activity.getPreview();
         String current_physical = main_activity.getApplicationInterface().getCameraIdSPhysicalPref();
         return lens.logical_id == preview.getCameraId() &&
                 (lens.physical_id == null ? current_physical == null : lens.physical_id.equals(current_physical));
     }
 
+    /** Whether AUTO is in charge: the auto camera, or the telephoto it hands off to, is open. */
+    private boolean smartAutoActive() {
+        return smartAutoPref() && auto_lens != null && (isOpen(auto_lens) || (tele_lens != null && isOpen(tele_lens)));
+    }
+
+    private boolean isSelected(Lens lens) {
+        if( smartAutoActive() )
+            return lens == auto_lens;
+        return isOpen(lens);
+    }
+
+    private static String largestSize(android.util.Size [] sizes) {
+        if( sizes == null || sizes.length == 0 )
+            return "none";
+        android.util.Size best = null;
+        for(android.util.Size size : sizes) {
+            if( best == null || (long)size.getWidth()*size.getHeight() > (long)best.getWidth()*best.getHeight() )
+                best = size;
+        }
+        return best.getWidth() + "x" + best.getHeight() + String.format(Locale.US, " (%.1f MP)", best.getWidth()*(double)best.getHeight()/1.0e6);
+    }
+
+    /** What Camera2 says about the highest resolution an app can capture from this camera. */
+    private String resolutionSummary(String camera_id) {
+        if( camera_id == null )
+            return "";
+        StringBuilder sb = new StringBuilder("--- resolution summary ---\n");
+        try {
+            CameraManager manager = (CameraManager)main_activity.getSystemService(Context.CAMERA_SERVICE);
+            CameraCharacteristics characteristics = manager.getCameraCharacteristics(camera_id);
+            android.hardware.camera2.params.StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            sb.append("pixel array: ").append(characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)).append('\n');
+            sb.append("largest JPEG (normal outputs): ").append(largestSize(map != null ? map.getOutputSizes(android.graphics.ImageFormat.JPEG) : null)).append('\n');
+            sb.append("largest JPEG (high resolution outputs): ").append(largestSize(map != null ? map.getHighResolutionOutputSizes(android.graphics.ImageFormat.JPEG) : null)).append('\n');
+            boolean ultra_high_resolution = false;
+            int [] capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
+            if( capabilities != null ) {
+                for(int capability : capabilities) {
+                    if( capability == 16 ) // REQUEST_AVAILABLE_CAPABILITIES_ULTRA_HIGH_RESOLUTION_SENSOR
+                        ultra_high_resolution = true;
+                }
+            }
+            sb.append("ultra high resolution sensor capability: ").append(ultra_high_resolution).append('\n');
+            if( Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ) {
+                android.hardware.camera2.params.StreamConfigurationMap max_map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION);
+                sb.append("largest JPEG (maximum resolution mode): ").append(largestSize(max_map != null ? max_map.getOutputSizes(android.graphics.ImageFormat.JPEG) : null)).append('\n');
+                sb.append("pixel array (maximum resolution mode): ").append(characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE_MAXIMUM_RESOLUTION)).append('\n');
+                sb.append("binning factor: ").append(characteristics.get(CameraCharacteristics.SENSOR_INFO_BINNING_FACTOR)).append('\n');
+            }
+            sb.append("verdict: ").append(ultra_high_resolution ?
+                    "the full-resolution mode is offered to apps (needs SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION)" :
+                    "apps are limited to the largest normal/high resolution output above - the device doesn't offer its full-resolution mode through Camera2").append('\n');
+        }
+        catch(Throwable e) {
+            sb.append("failed: ").append(e).append('\n');
+        }
+        return sb.toString();
+    }
+
     private String lensDebug(Lens lens) {
         StringBuilder sb = new StringBuilder();
         sb.append(lens).append('\n');
-        sb.append("selected: ").append(isSelected(lens)).append('\n');
+        sb.append("open: ").append(isOpen(lens)).append(", selected: ").append(isSelected(lens)).append('\n');
+        sb.append("smart auto: pref ").append(smartAutoPref()).append(", active ").append(smartAutoActive())
+                .append(", auto lens ").append(auto_lens != null ? auto_lens.label : "none")
+                .append(", hands off to ").append(tele_lens != null ? tele_lens.label + " (lens " + tele_lens.physical_id + ")" : "none").append('\n');
         sb.append("how it is opened: ").append(lens.physical_id != null ?
                 "physical lens " + lens.physical_id + " streamed through logical camera " + lens.camera2_id + " (no hardware zoom - software zoom)" :
-                lens.auto ? "logical multi-camera " + lens.camera2_id + " (hardware zoom, switches lenses automatically)" :
+                lens.auto ? "logical multi-camera " + lens.camera2_id + " (hardware zoom; the driver picks lenses, AUTO also hands off to the highest-power lens)" :
                 "standalone camera " + lens.camera2_id + " (hardware zoom on this lens only)").append('\n');
         sb.append("all lenses: \n");
         for(Lens other : last_lenses)
             sb.append("  ").append(other).append('\n');
+        String id = lens.physical_id != null ? lens.physical_id : lens.camera2_id;
+        sb.append('\n').append(resolutionSummary(id));
         sb.append("\n--- characteristics of ").append(lens.physical_id != null ? "physical " + lens.physical_id : "camera " + lens.camera2_id).append(" ---\n");
-        sb.append(characteristicsDump(lens.physical_id != null ? lens.physical_id : lens.camera2_id));
+        sb.append(characteristicsDump(id));
         return sb.toString();
     }
 
@@ -2018,7 +2190,8 @@ public class ModernUI {
      *  of them is open, so the carousel doesn't change as lenses are selected. A sensor that is
      *  exposed both as a standalone camera and as a lens of a multi-camera gets a chip for each,
      *  labelled with its camera/lens id, as they behave differently (only the standalone camera
-     *  supports hardware zoom). Called whenever a camera is opened.
+     *  supports hardware zoom). The output resolution toggle sits first. Called whenever a camera
+     *  is opened.
      */
     void rebuildLensChips() {
         createViewsIfNeeded();
@@ -2029,8 +2202,11 @@ public class ModernUI {
         selected_lens_zoom = 1.0;
         selected_lens_auto = false;
         auto_lens_zooms.clear();
+        auto_lens = null;
+        tele_lens = null;
         Preview preview = main_activity.getPreview();
         if( preview == null || preview.getCameraControllerManager() == null ) {
+            handoff_in_progress = false;
             syncVisibility();
             return;
         }
@@ -2068,10 +2244,14 @@ public class ModernUI {
                 }
             }
 
-            // the auto camera's lenses, for the zoom ruler
+            // the auto camera's lenses, for the zoom ruler, and the telephoto AUTO hands off to
+            auto_lens = first_auto;
             for(Lens lens : lenses) {
-                if( first_auto != null && lens.part_of_auto && lens.logical_id == first_auto.logical_id && !Double.isNaN(lens.zoom) )
+                if( first_auto != null && lens.part_of_auto && lens.logical_id == first_auto.logical_id && !Double.isNaN(lens.zoom) ) {
                     auto_lens_zooms.add(lens.zoom);
+                    if( lens.zoom > 1.5 && (tele_lens == null || lens.zoom > tele_lens.zoom) )
+                        tele_lens = lens;
+                }
             }
             Collections.sort(auto_lens_zooms);
 
@@ -2112,17 +2292,23 @@ public class ModernUI {
             }
 
             last_lenses.addAll(lenses);
+            int chips = 0;
+            if( !preview.isVideo() && main_activity.getApplicationInterface().getPhotoMode() != MyApplicationInterface.PhotoMode.Panorama ) {
+                addPresetChip();
+                chips++;
+            }
             for(Lens lens : lenses) {
                 boolean selected = isSelected(lens);
                 if( selected ) {
                     selected_lens_auto = lens.auto;
                     selected_lens_zoom = lens.auto || Double.isNaN(lens.zoom) ? 1.0 : lens.zoom;
                 }
-                if( lenses.size() > 1 )
+                if( lenses.size() > 1 ) {
                     addLensChip(lens, selected);
+                    chips++;
+                }
             }
-            if( lenses.size() > 1 )
-                lens_count = lenses.size();
+            lens_count = chips;
         }
         catch(Throwable e) {
             // camera drivers can throw a variety of exceptions; the carousel is optional
@@ -2136,6 +2322,47 @@ public class ModernUI {
             layoutPortrait();
         syncVisibility();
         refresh(); // available modes/settings depend on the camera
+
+        // finish an AUTO hand-off: carry the zoom level across to the newly opened camera
+        if( !Double.isNaN(pending_total_zoom) ) {
+            final double total = pending_total_zoom;
+            pending_total_zoom = Double.NaN;
+            root().postDelayed(() -> applyTotalZoom(total), 150);
+        }
+        else {
+            handoff_in_progress = false;
+        }
+    }
+
+    /** Sets the zoom so that the overall zoom (relative to the main lens) is total. */
+    private void applyTotalZoom(double total) {
+        handoff_in_progress = false;
+        Preview preview = main_activity.getPreview();
+        if( preview == null || preview.getCameraController() == null )
+            return;
+        if( tele_lens != null && isOpen(tele_lens) ) {
+            float ratio = (float)Math.max(1.0, Math.min(SOFTWARE_ZOOM_MAX, total / tele_lens.zoom));
+            preview.setSoftwareZoom(ratio);
+            preview.rebaseDragZoom(ratio);
+        }
+        else if( preview.supportsZoom() ) {
+            float min = preview.getMinZoomRatio();
+            float max = preview.getZoomRatio(preview.getMaxZoom());
+            float ratio = (float)Math.max(min, Math.min(max, total));
+            preview.setZoomRatio(ratio);
+            preview.rebaseDragZoom(ratio);
+        }
+    }
+
+    /** Starts an AUTO hand-off to another camera, keeping the overall zoom level. */
+    private void handOff(Lens target, double total) {
+        if( target == null )
+            return;
+        if( MyDebug.LOG )
+            Log.d(TAG, "AUTO hand-off to " + target + " at " + total);
+        handoff_in_progress = true;
+        pending_total_zoom = total;
+        main_activity.userSwitchToCamera(target.logical_id, target.physical_id);
     }
 
     static String zoomLabel(double zoom) {
@@ -2145,6 +2372,60 @@ public class ModernUI {
         if( Math.abs(zoom - rounded) < 0.15 )
             return rounded + "×";
         return String.format(Locale.US, "%.1f×", zoom);
+    }
+
+    private String presetLabel() {
+        String preset = main_activity.getApplicationInterface().getOutputPreset();
+        switch( preset ) {
+            case "8": return "8M";
+            case "24": return "24M";
+            case "max": return "MAX";
+            default: {
+                CameraController.Size size = main_activity.getApplicationInterface().getOutputPictureSize();
+                return size != null ? megapixelLabel(size.width, size.height) : "MAX";
+            }
+        }
+    }
+
+    /** Output resolution toggle (8M / 24M / MAX), first in the lens row. */
+    private void addPresetChip() {
+        final TextView chip = new TextView(main_activity);
+        chip.setText(presetLabel());
+        chip.setGravity(Gravity.CENTER);
+        chip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        chip.setTypeface(Typeface.DEFAULT_BOLD);
+        chip.setTextColor(ACCENT_COLOR);
+        chip.setBackground(roundedRect(CHIP_COLOR, dp(999)));
+        chip.setPadding(dp(12), 0, dp(12), 0);
+        chip.setMinWidth(dp(42));
+        chip.setContentDescription(str(R.string.uifork_photo_size) + " " + presetLabel());
+        addPressAnimation(chip);
+        chip.setOnClickListener(v -> {
+            String preset = main_activity.getApplicationInterface().getOutputPreset();
+            String next;
+            switch( preset ) {
+                case "8": next = "24"; break;
+                case "24": next = "max"; break;
+                default: next = "8"; break;
+            }
+            prefs().edit().putString(MyApplicationInterface.OutputPresetPreferenceKey, next).apply();
+            main_ui.destroyPopup();
+            chip.setText(presetLabel());
+            chip.setContentDescription(str(R.string.uifork_photo_size) + " " + presetLabel());
+            pulse(chip);
+            refresh();
+        });
+        attachDebug(chip, "Output resolution preset", () -> {
+            CameraController.Size output = main_activity.getApplicationInterface().getOutputPictureSize();
+            CameraController.Size capture = main_activity.getPreview().getCurrentPictureSize();
+            return "preset: " + main_activity.getApplicationInterface().getOutputPreset() +
+                    "\noutput: " + (output != null ? output.width + "x" + output.height : "null") +
+                    "\ncapture: " + (capture != null ? capture.width + "x" + capture.height : "null") + "\n";
+        });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
+        lp.setMargins(dp(5), 0, dp(5), 0);
+        lp.gravity = Gravity.CENTER_VERTICAL;
+        lens_row.addView(chip, lp);
     }
 
     private void addLensChip(final Lens lens, boolean selected) {
@@ -2175,6 +2456,14 @@ public class ModernUI {
                 return;
             closeChooser();
             main_ui.closePopup();
+            // AUTO turns smart hand-off on; picking any specific lens turns it off
+            prefs().edit().putBoolean(SMART_AUTO_KEY, lens.auto).apply();
+            if( isOpen(lens) ) {
+                // already open (e.g. the telephoto AUTO had handed off to): just reselect
+                preview.setSoftwareZoom(1.0f);
+                rebuildLensChips();
+                return;
+            }
             switchToLens(lens);
         });
         attachDebug(chip, "Lens " + lens.label + (wide ? " " + lens.sublabel : ""), () -> lensDebug(lens));
@@ -2193,7 +2482,7 @@ public class ModernUI {
      */
     private void switchToLens(final Lens lens) {
         Preview preview = main_activity.getPreview();
-        double current_zoom = (selected_lens_auto ? 1.0 : selected_lens_zoom) * preview.getSoftwareZoom();
+        double current_zoom = (selected_lens_auto && !(tele_lens != null && isOpen(tele_lens)) ? 1.0 : (tele_lens != null && isOpen(tele_lens) ? tele_lens.zoom : selected_lens_zoom)) * preview.getSoftwareZoom();
         if( preview.getCameraController() != null && preview.supportsZoom() )
             current_zoom *= preview.getZoomRatio();
         double target_zoom = lens.auto ? 1.0 : lens.zoom;
@@ -2227,8 +2516,10 @@ public class ModernUI {
 
     // ---------------------------------------------------------------- zoom ruler
 
-    /** Called by the preview while the user drags to zoom. */
-    public void onDragZoom(boolean active, float raw_x, float raw_y, float ratio, float min_ratio, float max_ratio, float pixels_per_log, float precision, boolean software) {
+    /** Called by the preview while the user drags to zoom. In smart AUTO, also hands off between
+     *  the auto camera and the highest-power lens as the zoom crosses that lens's native zoom.
+     */
+    public void onDragZoom(boolean active, float raw_x, float raw_y, float ratio, float intent_ratio, float min_ratio, float max_ratio, float pixels_per_log, float precision, boolean software) {
         if( !views_created )
             return;
         if( !active ) {
@@ -2238,27 +2529,54 @@ public class ModernUI {
         closeChooser();
         int [] location = new int[2];
         zoom_scale.getLocationOnScreen(location);
-        // convert from the open camera's ratios to zoom relative to the main lens
-        double factor = selected_lens_auto ? 1.0 : selected_lens_zoom;
         List<float []> segments = new ArrayList<>();
         List<String> labels = new ArrayList<>();
-        if( selected_lens_auto && !auto_lens_zooms.isEmpty() ) {
+        double current, range_min, range_max;
+        if( smartAutoActive() && tele_lens != null ) {
+            boolean on_tele = isOpen(tele_lens);
+            double factor = on_tele ? tele_lens.zoom : 1.0;
+            current = ratio * factor;
+            double intent = intent_ratio * factor;
+            if( !on_tele )
+                auto_min_ratio = min_ratio;
+            if( !handoff_in_progress ) {
+                if( !on_tele && intent >= tele_lens.zoom )
+                    handOff(tele_lens, Math.max(intent, tele_lens.zoom));
+                else if( on_tele && intent < tele_lens.zoom * 0.98 )
+                    handOff(auto_lens, intent);
+            }
+            range_min = Double.isNaN(auto_min_ratio) ? Math.min(min_ratio * factor, auto_lens_zooms.get(0)) : auto_min_ratio;
+            range_max = tele_lens.zoom * SOFTWARE_ZOOM_MAX;
             for(int i=0;i<auto_lens_zooms.size();i++) {
-                double start = i == 0 ? Math.min(min_ratio, auto_lens_zooms.get(0)) : auto_lens_zooms.get(i);
-                double end = i + 1 < auto_lens_zooms.size() ? auto_lens_zooms.get(i+1) : max_ratio;
+                double start = i == 0 ? Math.min(range_min, auto_lens_zooms.get(0)) : auto_lens_zooms.get(i);
+                double end = i + 1 < auto_lens_zooms.size() ? auto_lens_zooms.get(i+1) : range_max;
                 segments.add(new float[]{(float)start, (float)end});
                 labels.add(zoomLabel(auto_lens_zooms.get(i)));
             }
         }
         else {
-            segments.add(new float[]{(float)(min_ratio*factor), (float)(max_ratio*factor)});
-            String label = zoomLabel(factor);
-            if( software )
-                label += " " + str(R.string.uifork_digital);
-            labels.add(label);
+            // convert from the open camera's ratios to zoom relative to the main lens
+            double factor = selected_lens_auto ? 1.0 : selected_lens_zoom;
+            current = ratio * factor;
+            range_min = min_ratio * factor;
+            range_max = max_ratio * factor;
+            if( selected_lens_auto && !auto_lens_zooms.isEmpty() ) {
+                for(int i=0;i<auto_lens_zooms.size();i++) {
+                    double start = i == 0 ? Math.min(min_ratio, auto_lens_zooms.get(0)) : auto_lens_zooms.get(i);
+                    double end = i + 1 < auto_lens_zooms.size() ? auto_lens_zooms.get(i+1) : max_ratio;
+                    segments.add(new float[]{(float)start, (float)end});
+                    labels.add(zoomLabel(auto_lens_zooms.get(i)));
+                }
+            }
+            else {
+                segments.add(new float[]{(float)range_min, (float)range_max});
+                String label = zoomLabel(factor);
+                if( software )
+                    label += " " + str(R.string.uifork_digital);
+                labels.add(label);
+            }
         }
-        zoom_scale.update(raw_y - location[1], (float)(ratio*factor),
-                (float)(min_ratio*factor), (float)(max_ratio*factor), pixels_per_log, precision, segments, labels);
+        zoom_scale.update(raw_y - location[1], (float)current, (float)range_min, (float)range_max, pixels_per_log, precision, segments, labels);
     }
 
     /** Ruler fixed to the right-hand side of the screen while drag-zooming: ticks for zoom values,

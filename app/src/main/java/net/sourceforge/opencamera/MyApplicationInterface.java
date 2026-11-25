@@ -607,14 +607,51 @@ public class MyApplicationInterface extends BasicApplicationInterface {
      *  resolution reported by Preview.getCurrentPictureSize()).
      */
     public CameraController.Size getOutputPictureSize() {
-        if( output_resolution != null && getPhotoMode() != PhotoMode.Panorama )
-            return new CameraController.Size(output_resolution.first, output_resolution.second);
+        if( getPhotoMode() != PhotoMode.Panorama ) {
+            CameraController.Size preset = presetOutputSize();
+            if( preset != null )
+                return preset;
+            if( output_resolution != null )
+                return new CameraController.Size(output_resolution.first, output_resolution.second);
+        }
         return main_activity.getPreview().getCurrentPictureSize();
     }
 
+    /** Open Camera UI Fork: output size preset - "max" (the capture size), "8"/"24" (that many
+     *  megapixels, scaled from the capture size, so 24 can be an upscale), or "custom" (the
+     *  resolution preference).
+     */
+    public static final String OutputPresetPreferenceKey = "uifork_output_preset";
+
+    public String getOutputPreset() {
+        return sharedPreferences.getString(OutputPresetPreferenceKey, "custom");
+    }
+
+    private CameraController.Size presetOutputSize() {
+        String preset = getOutputPreset();
+        if( "custom".equals(preset) )
+            return null;
+        CameraController.Size capture = main_activity.getPreview().getCurrentPictureSize();
+        if( capture == null || capture.width <= 0 || capture.height <= 0 )
+            return null;
+        if( "max".equals(preset) )
+            return capture;
+        double megapixels;
+        try {
+            megapixels = Double.parseDouble(preset);
+        }
+        catch(NumberFormatException e) {
+            return null;
+        }
+        double scale = Math.sqrt(megapixels * 1.0e6 / (capture.width * (double)capture.height));
+        int width = (int)Math.round(capture.width * scale / 2.0) * 2;
+        int height = (int)Math.round(capture.height * scale / 2.0) * 2;
+        return new CameraController.Size(width, height);
+    }
+
     @Override
-    public void onDragZoom(boolean active, float raw_x, float raw_y, float ratio, float min_ratio, float max_ratio, float pixels_per_log, float precision, boolean software) {
-        main_activity.getMainUI().getModernUI().onDragZoom(active, raw_x, raw_y, ratio, min_ratio, max_ratio, pixels_per_log, precision, software);
+    public void onDragZoom(boolean active, float raw_x, float raw_y, float ratio, float intent_ratio, float min_ratio, float max_ratio, float pixels_per_log, float precision, boolean software) {
+        main_activity.getMainUI().getModernUI().onDragZoom(active, raw_x, raw_y, ratio, intent_ratio, min_ratio, max_ratio, pixels_per_log, precision, software);
     }
 
     /** Open Camera UI Fork: software (crop) zoom to apply to a photo being saved, 1 if none. */
@@ -629,13 +666,19 @@ public class MyApplicationInterface extends BasicApplicationInterface {
      *  otherwise null.
      */
     int [] getOutputResolutionForSave() {
-        if( output_resolution == null || getPhotoMode() == PhotoMode.Panorama )
+        if( getPhotoMode() == PhotoMode.Panorama )
             return null;
+        CameraController.Size output = presetOutputSize();
+        if( output == null ) {
+            if( output_resolution == null )
+                return null;
+            output = new CameraController.Size(output_resolution.first, output_resolution.second);
+        }
         CameraController.Size capture = main_activity.getPreview().getCurrentPictureSize();
-        if( capture != null && capture.width == output_resolution.first && capture.height == output_resolution.second )
+        if( capture != null && capture.width == output.width && capture.height == output.height )
             return null;
-        int long_edge = Math.max(output_resolution.first, output_resolution.second);
-        int short_edge = Math.min(output_resolution.first, output_resolution.second);
+        int long_edge = Math.max(output.width, output.height);
+        int short_edge = Math.min(output.width, output.height);
         return new int[]{long_edge, short_edge};
     }
 

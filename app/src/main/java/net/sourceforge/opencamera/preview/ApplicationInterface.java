@@ -238,7 +238,7 @@ public interface ApplicationInterface {
      *  max_ratio are relative to the open camera; pixels_per_log is how many pixels of drag change
      *  the natural log of the ratio by 1; software is true if this is software (crop) zoom.
      */
-    default void onDragZoom(boolean active, float raw_x, float raw_y, float ratio, float min_ratio, float max_ratio, float pixels_per_log, float precision, boolean software) {
+    default void onDragZoom(boolean active, float raw_x, float raw_y, float ratio, float intent_ratio, float min_ratio, float max_ratio, float pixels_per_log, float precision, boolean software) {
     }
     void requestTakePhoto(); // requesting taking a photo (due to single/double tap, if either getTouchCapturePref(), getDoubleTouchCapturePref() options are enabled)
     // the set/clear*Pref() methods are called if Preview decides to override the requested pref (because Camera device doesn't support requested pref) (clear*Pref() is called if the feature isn't supported at all)
