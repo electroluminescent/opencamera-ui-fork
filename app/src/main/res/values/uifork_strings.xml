@@ -41,6 +41,7 @@
     <string name="uifork_debug_copied">Debug info copied</string>
     <string name="uifork_lens">Lens</string>
     <string name="uifork_lens_auto">AUTO</string>
+    <string name="uifork_lens_in_use">in use by AUTO</string>
     <string name="uifork_digital">digital</string>
     <string name="uifork_lens_ultra_wide">Ultra wide</string>
     <string name="uifork_lens_wide">Wide</string>

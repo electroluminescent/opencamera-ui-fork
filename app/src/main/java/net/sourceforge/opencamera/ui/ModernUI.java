@@ -172,8 +172,13 @@ public class ModernUI {
     private Sheet open_sheet = Sheet.NONE;
     private boolean sheet_editing;
 
+    private LinearLayout lens_bar; // lens_fixed (output resolution + AUTO, always visible) then lens_scroll
+    private LinearLayout lens_fixed;
     private HorizontalScrollView lens_scroll;
     private LinearLayout lens_row;
+    private TextView preset_chip;
+    private View mode_marker; // marks the centre of the photo mode carousel
+    private Mode mode_candidate; // the mode in the centre of the carousel (selected when scrolling stops)
     private int lens_count;
     private final List<Lens> last_lenses = new ArrayList<>();
     // the open lens, for the zoom ruler: its zoom relative to the main lens, whether it is the
@@ -199,6 +204,11 @@ public class ModernUI {
     private final List<Lens> auto_chain = new ArrayList<>(); // lenses AUTO switches between, lowest zoom first
     private ImageView freeze_view;
     private boolean quiet_rebuild; // rebuilding the lens chips after an AUTO lens switch
+    // zoom ruler layout for the current drag: the screen y of the zoom level ruler_origin_log
+    private boolean ruler_active;
+    private float ruler_origin_y;
+    private double ruler_origin_log = Double.NaN;
+    private float ruler_pixels_per_log;
     private final Runnable unfreeze_runnable = this::unfreezePreview;
     private static final float SOFTWARE_ZOOM_MAX = 8.0f; // matches Preview
     private Lens auto_lens;
@@ -409,11 +419,19 @@ public class ModernUI {
         int side_padding = Math.max(0, width/2 - dp(48));
         mode_row.setPadding(side_padding, 0, side_padding, 0);
 
-        lp = resetParams(lens_scroll, ViewGroup.LayoutParams.WRAP_CONTENT, lens_h);
+        lp = resetParams(lens_bar, ViewGroup.LayoutParams.WRAP_CONTENT, lens_h);
         lp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
         lp.addRule(RelativeLayout.CENTER_HORIZONTAL);
+        lp.leftMargin = dp(6);
+        lp.rightMargin = dp(6);
         lp.bottomMargin = base + mode_h;
-        lens_scroll.setLayoutParams(lp);
+        lens_bar.setLayoutParams(lp);
+
+        lp = resetParams(mode_marker, dp(18), dp(3));
+        lp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
+        lp.addRule(RelativeLayout.CENTER_HORIZONTAL);
+        lp.bottomMargin = base + dp(2);
+        mode_marker.setLayoutParams(lp);
 
         lp = resetParams(take_photo, shutter, shutter);
         lp.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM);
@@ -613,7 +631,15 @@ public class ModernUI {
         lens_row.setOrientation(LinearLayout.HORIZONTAL);
         lens_row.setGravity(Gravity.CENTER);
         lens_scroll.addView(lens_row, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        root.addView(lens_scroll, insert_index++, new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
+        lens_bar = new LinearLayout(main_activity);
+        lens_bar.setOrientation(LinearLayout.HORIZONTAL);
+        lens_bar.setGravity(Gravity.CENTER_VERTICAL);
+        lens_fixed = new LinearLayout(main_activity);
+        lens_fixed.setOrientation(LinearLayout.HORIZONTAL);
+        lens_fixed.setGravity(Gravity.CENTER_VERTICAL);
+        lens_bar.addView(lens_fixed, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        lens_bar.addView(lens_scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT, 1.0f));
+        root.addView(lens_bar, insert_index++, new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
 
         // photo mode carousel
         mode_scroll = new HorizontalScrollView(main_activity);
@@ -639,12 +665,18 @@ public class ModernUI {
             return false;
         });
         mode_scroll.setOnScrollChangeListener((v, x, y, old_x, old_y) -> {
+            if( !mode_scroll_programmatic )
+                updateModeCandidate();
             if( mode_scroll_programmatic || mode_scroll_touching )
                 return;
             mode_scroll.removeCallbacks(mode_scroll_settle);
             mode_scroll.postDelayed(mode_scroll_settle, 180);
         });
         root.addView(mode_scroll, insert_index++, new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)));
+        mode_marker = new View(main_activity);
+        mode_marker.setBackground(roundedRect(ACCENT_COLOR, dp(2)));
+        mode_marker.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        root.addView(mode_marker, insert_index++, new RelativeLayout.LayoutParams(dp(18), dp(3)));
 
         // pin/unpin sheet for quick settings and photo modes
         sheet_scroll = new ScrollView(main_activity);
@@ -731,7 +763,8 @@ public class ModernUI {
             settings = main_activity.findViewById(R.id.settings).getVisibility();
         }
         setVisibility(mode_scroll, gui);
-        setVisibility(lens_scroll, lens_count > 1 ? gui : View.GONE);
+        setVisibility(lens_bar, lens_count > 1 ? gui : View.GONE);
+        setVisibility(mode_marker, mode_scroll.getVisibility());
         setVisibility(quick_bar, settings);
         if( settings != View.VISIBLE )
             closeChooser();
@@ -1437,6 +1470,17 @@ public class ModernUI {
             }
         }
         else {
+            final String preset = main_activity.getApplicationInterface().getOutputPreset();
+            final String [][] presets = { {"8", "8M"}, {"24", "24M"}, {"max", "MAX"} };
+            for(final String [] entry : presets) {
+                addChooserItem(entry[1], 0, entry[0].equals(preset), entry[1], "preset " + entry[0], v -> selectPreset(entry[0]));
+            }
+            View divider = new View(main_activity);
+            divider.setBackgroundColor(0x40FFFFFF);
+            LinearLayout.LayoutParams divider_lp = new LinearLayout.LayoutParams(dp(1), dp(22));
+            divider_lp.setMargins(dp(6), 0, dp(6), 0);
+            divider_lp.gravity = Gravity.CENTER_VERTICAL;
+            chooser_row.addView(divider, divider_lp);
             List<CameraController.Size> same_aspect = new ArrayList<>();
             for(CameraController.Size size : sizes) {
                 if( aspectLabel(size.width, size.height).equals(current_aspect) )
@@ -1449,7 +1493,7 @@ public class ModernUI {
                 if( used.contains(label) )
                     label = label + " " + Math.max(size.width, size.height);
                 used.add(label);
-                boolean selected = size.width == current.width && size.height == current.height;
+                boolean selected = "custom".equals(preset) && size.width == current.width && size.height == current.height;
                 addChooserItem(label, 0, selected, size.width + " x " + size.height, size.width + "x" + size.height, v -> selectOutputSize(size, true));
             }
         }
@@ -1462,6 +1506,7 @@ public class ModernUI {
         String key = PreferenceKeys.getResolutionPreferenceKey(preview.getCameraId(), main_activity.getApplicationInterface().getCameraIdSPhysicalPref());
         prefs().edit().putString(key, size.width + " " + size.height).apply();
         closeChooser();
+        updatePresetChip();
         main_ui.destroyPopup();
         main_activity.updateForSettings(true, "", false, false);
     }
@@ -1554,6 +1599,7 @@ public class ModernUI {
             mode_row.removeAllViews();
             mode_views.clear();
             last_selected_mode = null;
+            mode_candidate = null;
             for(final Mode mode : shown) {
                 TextView tab = new TextView(main_activity);
                 tab.setText(mode.label);
@@ -1588,6 +1634,7 @@ public class ModernUI {
                     animateTextColor(tab, selected ? Color.WHITE : TAB_INACTIVE_COLOR);
             }
             last_selected_mode = current;
+            mode_candidate = current;
             centreMode(current);
         }
     }
@@ -1607,10 +1654,8 @@ public class ModernUI {
         });
     }
 
-    /** Called once the user has stopped scrolling the carousel: activate the centred mode. */
-    private void onModeScrollSettled() {
-        if( mode_scroll_touching || mode_views.isEmpty() )
-            return;
+    /** The mode nearest the centre of the carousel. */
+    private Mode nearestCentreMode() {
         int centre = mode_scroll.getScrollX() + mode_scroll.getWidth()/2;
         Mode nearest = null;
         int nearest_distance = Integer.MAX_VALUE;
@@ -1622,6 +1667,34 @@ public class ModernUI {
                 nearest = entry.getKey();
             }
         }
+        return nearest;
+    }
+
+    /** While the carousel is scrolled, shows the mode in the centre (the one that will be
+     *  selected when it stops) as selected.
+     */
+    private void updateModeCandidate() {
+        Mode nearest = nearestCentreMode();
+        if( nearest == null || nearest == mode_candidate )
+            return;
+        Mode old = mode_candidate;
+        mode_candidate = nearest;
+        for(Map.Entry<Mode, TextView> entry : mode_views.entrySet()) {
+            Mode mode = entry.getKey();
+            if( mode != old && mode != nearest )
+                continue;
+            TextView tab = entry.getValue();
+            boolean on = mode == nearest;
+            tab.setTypeface(on ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            animateTextColor(tab, on ? Color.WHITE : TAB_INACTIVE_COLOR);
+        }
+    }
+
+    /** Called once the user has stopped scrolling the carousel: activate the centred mode. */
+    private void onModeScrollSettled() {
+        if( mode_scroll_touching || mode_views.isEmpty() )
+            return;
+        Mode nearest = nearestCentreMode();
         if( nearest == null )
             return;
         Preview preview = main_activity.getPreview();
@@ -1630,7 +1703,27 @@ public class ModernUI {
             selectMode(nearest);
         }
         else {
-            centreMode(nearest == currentMode() ? nearest : currentMode());
+            Mode current = currentMode();
+            centreMode(current);
+            if( mode_candidate != current ) {
+                Mode old = mode_candidate;
+                mode_candidate = null;
+                updateCandidateStyles(old, current);
+            }
+        }
+    }
+
+    private void updateCandidateStyles(Mode old, Mode now) {
+        mode_candidate = now;
+        TextView old_tab = old != null ? mode_views.get(old) : null;
+        TextView new_tab = now != null ? mode_views.get(now) : null;
+        if( old_tab != null && old != now ) {
+            old_tab.setTypeface(Typeface.DEFAULT);
+            animateTextColor(old_tab, TAB_INACTIVE_COLOR);
+        }
+        if( new_tab != null ) {
+            new_tab.setTypeface(Typeface.DEFAULT_BOLD);
+            animateTextColor(new_tab, Color.WHITE);
         }
     }
 
@@ -2479,6 +2572,8 @@ public class ModernUI {
         createViewsIfNeeded();
         restorePreviewAfterLensSwitch();
         lens_row.removeAllViews();
+        lens_fixed.removeAllViews();
+        preset_chip = null;
         lens_count = 0;
         last_lenses.clear();
         selected_lens_zoom = 1.0;
@@ -2628,6 +2723,7 @@ public class ModernUI {
                 addPresetChip();
                 chips++;
             }
+            View focus_chip = null;
             for(Lens lens : lenses) {
                 boolean selected = isSelected(lens);
                 if( selected ) {
@@ -2635,9 +2731,26 @@ public class ModernUI {
                     selected_lens_zoom = lens.auto || Double.isNaN(lens.zoom) ? 1.0 : lens.zoom;
                 }
                 if( lenses.size() > 1 ) {
-                    addLensChip(lens, selected);
+                    View chip = addLensChip(lens, selected);
                     chips++;
+                    if( !lens.auto && (selected || inUseByAuto(lens)) )
+                        focus_chip = chip;
                 }
+            }
+            if( lens_fixed.getChildCount() > 0 && lens_row.getChildCount() > 0 ) {
+                View divider = new View(main_activity);
+                divider.setBackgroundColor(0x40FFFFFF);
+                LinearLayout.LayoutParams divider_lp = new LinearLayout.LayoutParams(dp(1), dp(22));
+                divider_lp.setMargins(dp(3), 0, dp(3), 0);
+                divider_lp.gravity = Gravity.CENTER_VERTICAL;
+                lens_fixed.addView(divider, divider_lp);
+            }
+            if( focus_chip != null ) {
+                final View chip = focus_chip;
+                lens_scroll.post(() -> {
+                    int x = chip.getLeft() + chip.getWidth()/2 - lens_scroll.getWidth()/2;
+                    lens_scroll.smoothScrollTo(Math.max(0, x), 0);
+                });
             }
             lens_count = chips;
         }
@@ -2645,6 +2758,8 @@ public class ModernUI {
             // camera drivers can throw a variety of exceptions; the carousel is optional
             MyDebug.logStackTrace(TAG, "failed to build lens carousel", e);
             lens_row.removeAllViews();
+        lens_fixed.removeAllViews();
+        preset_chip = null;
             lens_count = 0;
         }
         if( MyDebug.LOG )
@@ -2872,20 +2987,42 @@ public class ModernUI {
             pulse(chip);
             refresh();
         });
-        attachDebug(chip, "Output resolution preset", () -> {
-            CameraController.Size output = main_activity.getApplicationInterface().getOutputPictureSize();
-            CameraController.Size capture = main_activity.getPreview().getCurrentPictureSize();
-            return "preset: " + main_activity.getApplicationInterface().getOutputPreset() +
-                    "\noutput: " + (output != null ? output.width + "x" + output.height : "null") +
-                    "\ncapture: " + (capture != null ? capture.width + "x" + capture.height : "null") + "\n";
+        // holding it shows every resolution (and the presets) in the chooser carousel; debug info
+        // for the resolutions is on the chooser's options
+        chip.setOnLongClickListener(v -> {
+            toggleChooser(Chooser.RESOLUTION);
+            return true;
         });
+        preset_chip = chip;
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
         lp.setMargins(dp(5), 0, dp(5), 0);
         lp.gravity = Gravity.CENTER_VERTICAL;
-        lens_row.addView(chip, lp);
+        lens_fixed.addView(chip, lp);
     }
 
-    private void addLensChip(final Lens lens, boolean selected) {
+    private void updatePresetChip() {
+        if( preset_chip == null )
+            return;
+        preset_chip.setText(presetLabel());
+        preset_chip.setContentDescription(str(R.string.uifork_photo_size) + " " + presetLabel());
+    }
+
+    private void selectPreset(String preset) {
+        prefs().edit().putString(MyApplicationInterface.OutputPresetPreferenceKey, preset).apply();
+        main_ui.destroyPopup();
+        closeChooser();
+        updatePresetChip();
+        if( preset_chip != null )
+            pulse(preset_chip);
+        refresh();
+    }
+
+    /** While AUTO is selected, whether this is the lens it is using right now. */
+    private boolean inUseByAuto(Lens lens) {
+        return !lens.auto && smartAutoActive() && isOpen(lens);
+    }
+
+    private View addLensChip(final Lens lens, boolean selected) {
         TextView chip = new TextView(main_activity);
         if( lens.sublabel != null ) {
             android.text.SpannableString text = new android.text.SpannableString(lens.label + "\n" + lens.sublabel);
@@ -2901,10 +3038,17 @@ public class ModernUI {
         chip.setTypeface(selected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
         chip.setTextColor(selected ? Color.BLACK : Color.WHITE);
         boolean wide = lens.sublabel != null || lens.label.length() > 4;
-        chip.setBackground(wide ? roundedRect(selected ? CHIP_SELECTED_COLOR : CHIP_COLOR, dp(999)) : oval(selected ? CHIP_SELECTED_COLOR : CHIP_COLOR));
+        GradientDrawable background = wide ? roundedRect(selected ? CHIP_SELECTED_COLOR : CHIP_COLOR, dp(999)) : oval(selected ? CHIP_SELECTED_COLOR : CHIP_COLOR);
+        final boolean in_use = inUseByAuto(lens);
+        if( in_use ) {
+            // light ring: the lens AUTO is using at the moment
+            background.setStroke(dp(1.5f), (ACCENT_COLOR & 0x00FFFFFF) | 0xB0000000);
+            chip.setTextColor(ACCENT_COLOR);
+        }
+        chip.setBackground(background);
         if( wide )
             chip.setPadding(dp(10), 0, dp(10), 0);
-        chip.setContentDescription(str(R.string.uifork_lens) + " " + lens.label + (lens.sublabel != null ? " " + lens.sublabel : ""));
+        chip.setContentDescription(str(R.string.uifork_lens) + " " + lens.label + (lens.sublabel != null ? " " + lens.sublabel : "") + (in_use ? " " + str(R.string.uifork_lens_in_use) : ""));
         chip.setSelected(selected);
         addPressAnimation(chip);
         chip.setOnClickListener(v -> {
@@ -2933,9 +3077,10 @@ public class ModernUI {
             chip.setMinWidth(dp(42));
         lp.setMargins(dp(5), 0, dp(5), 0);
         lp.gravity = Gravity.CENTER_VERTICAL;
-        lens_row.addView(chip, lp);
+        (lens.auto ? lens_fixed : lens_row).addView(chip, lp);
         if( selected && !quiet_rebuild )
             pulse(chip);
+        return chip;
     }
 
     /** Switches lens with a short zoom animation towards the new lens's field of view, worked out
@@ -2986,6 +3131,8 @@ public class ModernUI {
         if( !views_created )
             return;
         if( !active ) {
+            ruler_active = false;
+            ruler_origin_log = Double.NaN;
             zoom_scale.end();
             return;
         }
@@ -3022,12 +3169,29 @@ public class ModernUI {
                 label += " " + str(R.string.uifork_digital);
             labels.add(label);
         }
-        float anchor = raw_y - location[1];
+        // the scale stays put on screen: a zoom level keeps its height while the finger moves
+        // (the marker follows the finger), and is only re-laid out when the precision changes,
+        // magnifying around the current zoom level so it stays where it is
+        float anchor;
         float [] span = previewSpan();
-        if( span != null && precision > 0.0f && current > 0.0 ) {
-            float base_pixels_per_log = pixels_per_log / precision;
-            anchor = span[0] - location[1] + span[1] * RULER_MARGIN + (float)((Math.log(range_max) - Math.log(current)) * base_pixels_per_log);
+        if( !ruler_active || Double.isNaN(ruler_origin_log) ) {
+            ruler_active = true;
+            if( span != null && precision > 0.0f && current > 0.0 ) {
+                float base_pixels_per_log = pixels_per_log / precision;
+                ruler_origin_y = span[0] + span[1] * RULER_MARGIN + (float)((Math.log(range_max) - Math.log(current)) * base_pixels_per_log);
+            }
+            else {
+                ruler_origin_y = raw_y;
+            }
+            ruler_origin_log = Math.log(current);
+            ruler_pixels_per_log = pixels_per_log;
         }
+        else if( Math.abs(pixels_per_log - ruler_pixels_per_log) > 1.0e-3f * ruler_pixels_per_log ) {
+            ruler_origin_y = (float)(ruler_origin_y - (Math.log(current) - ruler_origin_log) * ruler_pixels_per_log);
+            ruler_origin_log = Math.log(current);
+            ruler_pixels_per_log = pixels_per_log;
+        }
+        anchor = (float)(ruler_origin_y - (Math.log(current) - ruler_origin_log) * ruler_pixels_per_log) - location[1];
         zoom_scale.update(anchor, (float)current, (float)range_min, (float)range_max, pixels_per_log, precision, segments, labels);
     }
 
@@ -3124,7 +3288,8 @@ public class ModernUI {
             final float window_bottom = Math.max(window_top + dp(120), getHeight() - pill_bottom - dp(60));
             final float fade = Math.min(dp(64), (window_bottom - window_top) / 3.0f);
             // the current zoom sits level with the finger, kept clear of the faded ends
-            anchor_y = Math.max(window_top + fade, Math.min(window_bottom - fade, finger_y));
+            anchor_y = finger_y;
+            final float marker_y = Math.max(window_top + fade, Math.min(window_bottom - fade, anchor_y));
             float line_top = Math.max(window_top, yFor(max));
             float line_bottom = Math.min(window_bottom, yFor(min));
 
@@ -3192,7 +3357,7 @@ public class ModernUI {
 
             // current position marker and value
             fill_paint.setColor(Color.WHITE);
-            canvas.drawCircle(ruler_x, anchor_y, dp(4.5f), fill_paint);
+            canvas.drawCircle(ruler_x, marker_y, dp(4.5f), fill_paint);
             String text = String.format(Locale.US, current < 10 ? "%.1f×" : "%.0f×", current);
             text_paint.setTextSize(dp(18));
             text_paint.setTypeface(Typeface.DEFAULT_BOLD);
@@ -3200,16 +3365,16 @@ public class ModernUI {
             float text_w = text_paint.measureText(text);
             float bubble_right = ruler_x - dp(96);
             fill_paint.setColor(0xD9000000);
-            rect.set(bubble_right - text_w - dp(24), anchor_y - dp(17), bubble_right, anchor_y + dp(17));
+            rect.set(bubble_right - text_w - dp(24), marker_y - dp(17), bubble_right, marker_y + dp(17));
             canvas.drawRoundRect(rect, dp(17), dp(17), fill_paint);
             text_paint.setColor(Color.WHITE);
-            canvas.drawText(text, bubble_right - dp(12), anchor_y + dp(6), text_paint);
+            canvas.drawText(text, bubble_right - dp(12), marker_y + dp(6), text_paint);
             if( precision >= 1.3f ) {
                 text_paint.setTextSize(dp(11));
                 text_paint.setTypeface(Typeface.DEFAULT);
                 text_paint.setColor(ACCENT_COLOR);
                 String fine = String.format(Locale.US, str(R.string.uifork_fine_zoom), precision);
-                canvas.drawText(fine, bubble_right - dp(12), anchor_y + dp(32), text_paint);
+                canvas.drawText(fine, bubble_right - dp(12), marker_y + dp(32), text_paint);
             }
             text_paint.setTextSize(dp(11));
             text_paint.setColor(Color.WHITE);

@@ -728,7 +728,7 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
     private static final float DRAG_ZOOM_DP_PER_DOUBLING = 50.0f;
     private static final float DRAG_ZOOM_PRECISION_DP = 24.0f; // sideways distance for each +1x of precision
     private static final float DRAG_ZOOM_MAX_PRECISION = 5.0f;
-    private static final float DRAG_ZOOM_PRECISION_DEADZONE_DP = 10.0f;
+    private static final float DRAG_ZOOM_PRECISION_DEADZONE_DP = 16.0f;
     private float drag_zoom_precision = 1.0f;
     private float drag_zoom_precision_x; // finger x where the precision was last changed
     private boolean drag_zoom_active;
@@ -869,8 +869,9 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
                 return;
             drag_zoom_active = true;
             drag_zoom_last_y = event.getY();
+            // every drag starts at the coarsest precision (the whole range)
             drag_zoom_precision = 1.0f;
-            drag_zoom_precision_x = touch_orig_x;
+            drag_zoom_precision_x = event.getX();
             float start_ratio = hardware ? zoom_ratios.get(camera_controller.getZoom())/100.0f : software_zoom;
             drag_zoom_log = (float)Math.log(start_ratio);
             drag_zoom_intent_log = drag_zoom_log;
@@ -882,12 +883,12 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
         }
         float min_ratio = hardware ? zoom_ratios.get(0)/100.0f : 1.0f;
         float max_ratio = hardware ? zoom_ratios.get(max_zoom_factor)/100.0f : SOFTWARE_ZOOM_MAX;
-        // moving the finger sideways from where the drag started makes the scale finer; small
-        // sideways wobble while dragging (within the deadzone) keeps the current precision
-        if( Math.abs(event.getX() - drag_zoom_precision_x) > DRAG_ZOOM_PRECISION_DEADZONE_DP * density ) {
-            drag_zoom_precision = Math.min(DRAG_ZOOM_MAX_PRECISION, 1.0f + Math.abs(event.getX() - touch_orig_x) / (DRAG_ZOOM_PRECISION_DP * density));
-            drag_zoom_precision_x = event.getX();
-        }
+        // moving the finger sideways from where the drag started makes the scale finer. The
+        // precision depends only on that sideways distance (so it is the same anywhere along a
+        // vertical line), and is 1 within a deadzone around the start so the drift of a thumb
+        // dragging up and down doesn't change it
+        float sideways = Math.abs(event.getX() - drag_zoom_precision_x) - DRAG_ZOOM_PRECISION_DEADZONE_DP * density;
+        drag_zoom_precision = Math.max(1.0f, Math.min(DRAG_ZOOM_MAX_PRECISION, 1.0f + sideways / (DRAG_ZOOM_PRECISION_DP * density)));
         float step = drag_zoom_last_y - event.getY(); // dragging up zooms in
         drag_zoom_last_y = event.getY();
         drag_zoom_last_raw_x = event.getRawX();
