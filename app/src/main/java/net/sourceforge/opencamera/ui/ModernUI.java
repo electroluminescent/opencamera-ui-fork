@@ -689,6 +689,13 @@ public class ModernUI {
         sheet_scroll.addView(sheet_content, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(sheet_scroll, insert_index, new RelativeLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        // zoom dragging works over the whole screen, not just the photo: touches that land on the
+        // preview's container (outside the camera view) and that no control took go to the preview
+        View camera_view = main_activity.getPreview().getView();
+        if( camera_view != null && camera_view.getParent() instanceof View ) {
+            ((View)camera_view.getParent()).setOnTouchListener((v, event) -> main_activity.getPreview().outsideTouchEvent(event));
+        }
+
         // mirror the stock buttons' visibility (they still track capture state, immersive mode etc.)
         root.getViewTreeObserver().addOnGlobalLayoutListener(this::syncVisibility);
     }
@@ -3252,6 +3259,8 @@ public class ModernUI {
             ruler_pixels_per_log = pixels_per_log;
         }
         anchor = (float)(ruler_origin_y - (Math.log(current) - ruler_origin_log) * ruler_pixels_per_log) - location[1];
+        Preview preview = main_activity.getPreview();
+        zoom_scale.setPrecisionBands(preview.getDragZoomStartRawX() - location[0], preview.getDragZoomPrecisionEdges());
         zoom_scale.update(anchor, (float)current, (float)range_min, (float)range_max, pixels_per_log, precision, segments, labels);
     }
 
@@ -3272,6 +3281,44 @@ public class ModernUI {
         private float finger_y, anchor_y, current, min, max, pixels_per_log, precision;
         private List<float []> segments = new ArrayList<>();
         private List<String> segment_labels = new ArrayList<>();
+        private float band_centre_x = Float.NaN;
+        private float [] band_edges;
+
+        void setPrecisionBands(float centre_x, float [] edges) {
+            this.band_centre_x = centre_x;
+            this.band_edges = edges;
+        }
+
+        /** Vertical lines either side of where the drag started, marking the bands within which
+         *  the precision stays the same; the band the finger is in is brighter.
+         */
+        private void drawPrecisionBands(Canvas canvas, float top, float bottom) {
+            if( Float.isNaN(band_centre_x) || band_edges == null || band_edges.length == 0 )
+                return;
+            int level = Math.max(0, Math.min(band_edges.length, Math.round(precision) - 1));
+            // the finger's band: between edge level-1 (or the centre) and edge level
+            float inner = level == 0 ? 0.0f : band_edges[level - 1];
+            float outer = level < band_edges.length ? band_edges[level] : -1.0f;
+            fill_paint.setColor(0x14FFFFFF);
+            if( level == 0 ) {
+                canvas.drawRect(band_centre_x - outer, top, band_centre_x + outer, bottom, fill_paint);
+            }
+            else if( outer > 0.0f ) {
+                canvas.drawRect(band_centre_x - outer, top, band_centre_x - inner, bottom, fill_paint);
+                canvas.drawRect(band_centre_x + inner, top, band_centre_x + outer, bottom, fill_paint);
+            }
+            float stroke = line_paint.getStrokeWidth();
+            int colour = line_paint.getColor();
+            line_paint.setStrokeWidth(dp(1));
+            for(int i=0;i<band_edges.length;i++) {
+                boolean current_band = i == level || i == level - 1;
+                line_paint.setColor(current_band ? 0x8CFFFFFF : 0x33FFFFFF);
+                canvas.drawLine(band_centre_x - band_edges[i], top, band_centre_x - band_edges[i], bottom, line_paint);
+                canvas.drawLine(band_centre_x + band_edges[i], top, band_centre_x + band_edges[i], bottom, line_paint);
+            }
+            line_paint.setStrokeWidth(stroke);
+            line_paint.setColor(colour);
+        }
 
         ZoomScaleView(Context context) {
             super(context);
@@ -3352,6 +3399,8 @@ public class ModernUI {
             final float marker_y = Math.max(window_top + fade, Math.min(window_bottom - fade, anchor_y));
             float line_top = Math.max(window_top, yFor(max));
             float line_bottom = Math.min(window_bottom, yFor(min));
+
+            drawPrecisionBands(canvas, 0.0f, getHeight()); // the whole screen can be dragged on
 
             int layer = canvas.saveLayer(0, window_top, getWidth(), window_bottom, null);
 

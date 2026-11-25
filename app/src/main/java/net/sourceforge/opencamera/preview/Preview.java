@@ -292,6 +292,12 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
     private boolean touch_was_multitouch;
     private float touch_orig_x;
     private float touch_orig_y;
+    // Open Camera UI Fork: the touch-down position in screen coordinates. Drag zoom works in
+    // screen coordinates because software zoom scales this view, and a scaled view reports touch
+    // positions in its own (scaled) coordinates, so each zoom step would move the finger's
+    // reported position and feed back into the zoom (worst far from the centre of the preview)
+    private float touch_orig_raw_x;
+    private float touch_orig_raw_y;
 
     private List<String> supported_flash_values; // our "values" format
     private int current_flash_index = -1; // this is an index into the supported_flash_values array, or -1 if no flash modes available
@@ -666,6 +672,8 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
                 if( event.getAction() == MotionEvent.ACTION_DOWN ) {
                     touch_orig_x = event.getX();
                     touch_orig_y = event.getY();
+                    touch_orig_raw_x = event.getRawX();
+                    touch_orig_raw_y = event.getRawY();
                     if( MyDebug.LOG )
                         Log.d(TAG, "touch down at " + touch_orig_x + " , " + touch_orig_y);
                 }
@@ -726,9 +734,11 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
     // starting point makes the zoom finer.
     private static final float SOFTWARE_ZOOM_MAX = 8.0f;
     private static final float DRAG_ZOOM_DP_PER_DOUBLING = 50.0f;
-    private static final float DRAG_ZOOM_PRECISION_DP = 24.0f; // sideways distance for each +1x of precision
+    // precision comes in whole levels, each a vertical band of the screen: a band either side of
+    // where the drag started (the deadzone) is 1x, then each further band out is +1x
+    private static final float DRAG_ZOOM_PRECISION_DP = 32.0f; // width of each band beyond the deadzone
     private static final float DRAG_ZOOM_MAX_PRECISION = 5.0f;
-    private static final float DRAG_ZOOM_PRECISION_DEADZONE_DP = 16.0f;
+    private static final float DRAG_ZOOM_PRECISION_DEADZONE_DP = 24.0f; // either side of the start
     private float drag_zoom_precision = 1.0f;
     private float drag_zoom_precision_x; // finger x where the precision was last changed
     private boolean drag_zoom_active;
@@ -814,10 +824,62 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
     private float drag_zoom_last_pixels_per_log = -1.0f;
 
     private void bankDragZoom(MotionEvent event) {
-        drag_zoom_banked_px += drag_zoom_last_y - event.getY();
-        drag_zoom_last_y = event.getY();
+        drag_zoom_banked_px += drag_zoom_last_y - event.getRawY();
+        drag_zoom_last_y = event.getRawY();
         drag_zoom_last_raw_x = event.getRawX();
         drag_zoom_last_raw_y = event.getRawY();
+    }
+
+    /** Open Camera UI Fork: screen x where the current zoom drag started. */
+    public float getDragZoomStartRawX() {
+        return drag_zoom_precision_x;
+    }
+
+    /** Open Camera UI Fork: distances (in pixels, either side of the drag's start) of the edges
+     *  of the precision bands, innermost first; within each band the precision doesn't change.
+     */
+    public float [] getDragZoomPrecisionEdges() {
+        float density = getResources().getDisplayMetrics().density;
+        int count = (int)DRAG_ZOOM_MAX_PRECISION - 1;
+        float [] edges = new float[count];
+        for(int i=0;i<count;i++)
+            edges[i] = (DRAG_ZOOM_PRECISION_DEADZONE_DP + i * DRAG_ZOOM_PRECISION_DP) * density;
+        return edges;
+    }
+
+    /** Open Camera UI Fork: touches on the screen outside the camera view (e.g. below the photo
+     *  area, where no control took them): only zoom dragging, never taps (focus, capture).
+     */
+    public boolean outsideTouchEvent(MotionEvent event) {
+        if( event.getPointerCount() != 1 ) {
+            touch_was_multitouch = true;
+            endDragZoom();
+            return true;
+        }
+        switch( event.getActionMasked() ) {
+            case MotionEvent.ACTION_DOWN:
+                touch_was_multitouch = false;
+                drag_zoom_active = false;
+                touch_orig_raw_x = event.getRawX();
+                touch_orig_raw_y = event.getRawY();
+                break;
+            case MotionEvent.ACTION_MOVE:
+                if( touch_was_multitouch )
+                    break;
+                if( camera_controller == null ) {
+                    if( drag_zoom_active )
+                        bankDragZoom(event);
+                }
+                else {
+                    handleDragZoom(event);
+                }
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+                endDragZoom();
+                break;
+        }
+        return true;
     }
 
     /** Open Camera UI Fork: hold an active zoom drag (see drag_zoom_held). */
@@ -857,21 +919,21 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
         boolean software = !hardware && supportsSoftwareZoom();
         if( !hardware && !software ) {
             if( drag_zoom_active )
-                drag_zoom_last_y = event.getY();
+                drag_zoom_last_y = event.getRawY();
             return;
         }
         float density = getResources().getDisplayMetrics().density;
         if( !drag_zoom_active ) {
-            float dy = touch_orig_y - event.getY();
-            float dx = event.getX() - touch_orig_x;
+            float dy = touch_orig_raw_y - event.getRawY();
+            float dx = event.getRawX() - touch_orig_raw_x;
             float slop = 12 * density;
             if( Math.abs(dy) < slop || Math.abs(dy) < 1.2f*Math.abs(dx) )
                 return;
             drag_zoom_active = true;
-            drag_zoom_last_y = event.getY();
+            drag_zoom_last_y = event.getRawY();
             // every drag starts at the coarsest precision (the whole range)
             drag_zoom_precision = 1.0f;
-            drag_zoom_precision_x = event.getX();
+            drag_zoom_precision_x = event.getRawX();
             float start_ratio = hardware ? zoom_ratios.get(camera_controller.getZoom())/100.0f : software_zoom;
             drag_zoom_log = (float)Math.log(start_ratio);
             drag_zoom_intent_log = drag_zoom_log;
@@ -887,10 +949,11 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
         // precision depends only on that sideways distance (so it is the same anywhere along a
         // vertical line), and is 1 within a deadzone around the start so the drift of a thumb
         // dragging up and down doesn't change it
-        float sideways = Math.abs(event.getX() - drag_zoom_precision_x) - DRAG_ZOOM_PRECISION_DEADZONE_DP * density;
-        drag_zoom_precision = Math.max(1.0f, Math.min(DRAG_ZOOM_MAX_PRECISION, 1.0f + sideways / (DRAG_ZOOM_PRECISION_DP * density)));
-        float step = drag_zoom_last_y - event.getY(); // dragging up zooms in
-        drag_zoom_last_y = event.getY();
+        float sideways = Math.abs(event.getRawX() - drag_zoom_precision_x) - DRAG_ZOOM_PRECISION_DEADZONE_DP * density;
+        int level = sideways <= 0.0f ? 0 : 1 + (int)(sideways / (DRAG_ZOOM_PRECISION_DP * density));
+        drag_zoom_precision = Math.min(DRAG_ZOOM_MAX_PRECISION, 1.0f + level);
+        float step = drag_zoom_last_y - event.getRawY(); // dragging up zooms in
+        drag_zoom_last_y = event.getRawY();
         drag_zoom_last_raw_x = event.getRawX();
         drag_zoom_last_raw_y = event.getRawY();
         dragZoomBy(step, event.getRawX(), event.getRawY());
