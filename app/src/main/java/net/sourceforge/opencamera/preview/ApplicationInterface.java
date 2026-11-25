@@ -240,6 +240,13 @@ public interface ApplicationInterface {
      */
     default void onDragZoom(boolean active, float raw_x, float raw_y, float ratio, float intent_ratio, float min_ratio, float max_ratio, float pixels_per_log, float precision, boolean software) {
     }
+
+    /** Drag-zoom distance in pixels per natural-log unit of zoom at the coarsest precision, for
+     *  the open camera's zoom ratio range; a value <= 0 uses the default.
+     */
+    default float getDragZoomPixelsPerLog(float min_ratio, float max_ratio) {
+        return -1.0f;
+    }
     void requestTakePhoto(); // requesting taking a photo (due to single/double tap, if either getTouchCapturePref(), getDoubleTouchCapturePref() options are enabled)
     // the set/clear*Pref() methods are called if Preview decides to override the requested pref (because Camera device doesn't support requested pref) (clear*Pref() is called if the feature isn't supported at all)
     // the application can use this information to update its preferences

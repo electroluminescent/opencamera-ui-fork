@@ -654,6 +654,11 @@ public class MyApplicationInterface extends BasicApplicationInterface {
         main_activity.getMainUI().getModernUI().onDragZoom(active, raw_x, raw_y, ratio, intent_ratio, min_ratio, max_ratio, pixels_per_log, precision, software);
     }
 
+    @Override
+    public float getDragZoomPixelsPerLog(float min_ratio, float max_ratio) {
+        return main_activity.getMainUI().getModernUI().dragZoomPixelsPerLog(min_ratio, max_ratio);
+    }
+
     /** Open Camera UI Fork: software (crop) zoom to apply to a photo being saved, 1 if none. */
     float getSoftwareZoomForSave() {
         Preview preview = main_activity.getPreview();

@@ -841,7 +841,11 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
             drag_zoom_precision_x = event.getX();
         }
         float precision = drag_zoom_precision;
-        float pixels_per_log = DRAG_ZOOM_DP_PER_DOUBLING * density * precision / (float)Math.log(2.0);
+        // the app may set the coarsest sensitivity (e.g. so the whole range fits the preview's height)
+        float base_pixels_per_log = applicationInterface.getDragZoomPixelsPerLog(min_ratio, max_ratio);
+        if( !(base_pixels_per_log > 0.0f) )
+            base_pixels_per_log = DRAG_ZOOM_DP_PER_DOUBLING * density / (float)Math.log(2.0);
+        float pixels_per_log = base_pixels_per_log * precision;
         float step = drag_zoom_last_y - event.getY(); // dragging up zooms in
         drag_zoom_last_y = event.getY();
         // the intent may overshoot the range a little, so the app can tell the user is pushing

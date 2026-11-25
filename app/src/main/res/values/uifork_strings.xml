@@ -55,6 +55,15 @@
         <item>Names (Ultra wide, Wide, Tele, Macro)</item>
         <item>Zoom levels (0.6×, 1×, 3×)</item>
     </string-array>
+    <string name="uifork_auto_switching">AUTO lens switching</string>
+    <string-array name="uifork_auto_switching_entries">
+        <item>Each lens from its minimum zoom (switched by this app)</item>
+        <item>Phone decides, plus highest-power lens</item>
+    </string-array>
+    <string-array name="uifork_auto_switching_values" translatable="false">
+        <item>app</item>
+        <item>phone</item>
+    </string-array>
     <string-array name="uifork_lens_labels_values" translatable="false">
         <item>names</item>
         <item>zoom</item>

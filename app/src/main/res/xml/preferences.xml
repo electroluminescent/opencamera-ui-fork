@@ -83,6 +83,15 @@
             android:entryValues="@array/uifork_lens_labels_values"
             android:defaultValue="names"
             />
+
+        <ListPreference
+            android:key="uifork_auto_switching"
+            android:title="@string/uifork_auto_switching"
+            android:summary="@string/uifork_lens_labels_summary"
+            android:entries="@array/uifork_auto_switching_entries"
+            android:entryValues="@array/uifork_auto_switching_values"
+            android:defaultValue="app"
+            />
     </PreferenceCategory>
 
     <PreferenceCategory

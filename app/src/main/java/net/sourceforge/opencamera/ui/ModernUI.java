@@ -194,6 +194,11 @@ public class ModernUI {
     // Samsung's driver doesn't use the 5x telephoto for other apps), so AUTO hands off to the
     // highest-power lens itself, with software zoom on top
     private static final String SMART_AUTO_KEY = "uifork_smart_auto";
+    private static final String AUTO_SWITCHING_KEY = "uifork_auto_switching";
+    private static final float RULER_MARGIN = 0.15f; // of the preview height, above and below the whole zoom range
+    private final List<Lens> auto_chain = new ArrayList<>(); // lenses AUTO switches between, lowest zoom first
+    private ImageView freeze_view;
+    private final Runnable unfreeze_runnable = this::unfreezePreview;
     private static final float SOFTWARE_ZOOM_MAX = 8.0f; // matches Preview
     private Lens auto_lens;
     private Lens tele_lens;
@@ -2260,9 +2265,64 @@ public class ModernUI {
                 (lens.physical_id == null ? current_physical == null : lens.physical_id.equals(current_physical));
     }
 
-    /** Whether AUTO is in charge: the auto camera, or the telephoto it hands off to, is open. */
+    /** "app": AUTO switches lens itself at each lens's minimum zoom, streaming the lenses
+     *  directly; "phone": the phone's multi-camera picks between the lenses it uses, and AUTO only
+     *  hands off to the highest-power lens the phone doesn't use.
+     */
+    private boolean appSwitching() {
+        return !"phone".equals(prefs().getString(AUTO_SWITCHING_KEY, "app"));
+    }
+
+    /** The open lens, from the carousel's lenses. */
+    private Lens openLens() {
+        for(Lens lens : last_lenses) {
+            if( isOpen(lens) )
+                return lens;
+        }
+        return null;
+    }
+
+    private static double factorOf(Lens lens) {
+        return lens == null || lens.auto || Double.isNaN(lens.zoom) ? 1.0 : lens.zoom;
+    }
+
+    /** Whether AUTO is in charge: the auto camera, or one of the lenses it switches between, is open. */
     private boolean smartAutoActive() {
-        return smartAutoPref() && auto_lens != null && (isOpen(auto_lens) || (tele_lens != null && isOpen(tele_lens)));
+        if( !smartAutoPref() || auto_lens == null )
+            return false;
+        if( isOpen(auto_lens) )
+            return true;
+        for(Lens lens : auto_chain) {
+            if( isOpen(lens) )
+                return true;
+        }
+        return false;
+    }
+
+    /** The lens AUTO should be using for an overall zoom (relative to the main lens) of total,
+     *  given the lens that is open: each lens from its own minimum up to the next lens's
+     *  minimum, with a little hysteresis so it doesn't flick between two lenses.
+     */
+    private Lens autoTargetFor(double total, Lens open) {
+        if( auto_chain.isEmpty() )
+            return auto_lens;
+        int open_index = auto_chain.indexOf(open);
+        Lens target = auto_chain.get(0);
+        for(int i=1;i<auto_chain.size();i++) {
+            double threshold = auto_chain.get(i).zoom;
+            if( open_index >= i )
+                threshold *= 0.98;
+            if( total >= threshold )
+                target = auto_chain.get(i);
+        }
+        return target;
+    }
+
+    /** The lens AUTO opens when it is tapped. */
+    private Lens autoEntryLens() {
+        if( !appSwitching() || auto_chain.isEmpty() || auto_chain.get(0).auto )
+            return auto_lens;
+        return autoTargetFor(1.0, null);
     }
 
     private boolean isSelected(Lens lens) {
@@ -2326,6 +2386,10 @@ public class ModernUI {
         sb.append("smart auto: pref ").append(smartAutoPref()).append(", active ").append(smartAutoActive())
                 .append(", auto lens ").append(auto_lens != null ? auto_lens.label : "none")
                 .append(", hands off to ").append(tele_lens != null ? tele_lens.label + " (lens " + tele_lens.physical_id + ")" : "none").append('\n');
+        sb.append("AUTO switching: ").append(appSwitching() ? "app (each lens from its minimum)" : "phone").append(", chain:");
+        for(Lens chain_lens : auto_chain)
+            sb.append(' ').append(chain_lens.auto ? "AUTO" : zoomLabel(chain_lens.zoom) + "(" + chain_lens.physical_id + ")");
+        sb.append('\n');
         sb.append("how it is opened: ").append(lens.physical_id != null ?
                 "physical lens " + lens.physical_id + " streamed through logical camera " + lens.camera2_id + " (no hardware zoom - software zoom)" :
                 lens.auto ? "logical multi-camera " + lens.camera2_id + " (hardware zoom; the driver picks lenses, AUTO also hands off to the highest-power lens)" :
@@ -2436,6 +2500,25 @@ public class ModernUI {
             }
             Collections.sort(auto_lens_zooms);
 
+            // the lenses AUTO switches between
+            auto_chain.clear();
+            if( first_auto != null ) {
+                List<Lens> physical_lenses = new ArrayList<>();
+                for(Lens lens : lenses) {
+                    if( lens.part_of_auto && lens.logical_id == first_auto.logical_id && !Double.isNaN(lens.zoom) )
+                        physical_lenses.add(lens);
+                }
+                Collections.sort(physical_lenses, (a, b) -> Double.compare(a.zoom, b.zoom));
+                if( appSwitching() && physical_lenses.size() >= 2 ) {
+                    auto_chain.addAll(physical_lenses);
+                }
+                else {
+                    auto_chain.add(first_auto);
+                    if( tele_lens != null )
+                        auto_chain.add(tele_lens);
+                }
+            }
+
             Collections.sort(lenses, (a, b) -> {
                 if( a.auto != b.auto )
                     return a.auto ? -1 : 1;
@@ -2519,14 +2602,23 @@ public class ModernUI {
         syncVisibility();
         refresh(); // available modes/settings depend on the camera
 
-        // finish an AUTO hand-off: carry the zoom level across to the newly opened camera
+        // finish an AUTO hand-off: carry the zoom level across to the newly opened camera, then
+        // let the live preview show through the frozen frame
         if( !Double.isNaN(pending_total_zoom) ) {
             final double total = pending_total_zoom;
             pending_total_zoom = Double.NaN;
-            root().postDelayed(() -> applyTotalZoom(total), 150);
+            root().postDelayed(() -> {
+                applyTotalZoom(total);
+                root().removeCallbacks(unfreeze_runnable);
+                root().postDelayed(unfreeze_runnable, 220);
+            }, 120);
         }
         else {
             handoff_in_progress = false;
+            if( freeze_view != null && freeze_view.getVisibility() == View.VISIBLE ) {
+                root().removeCallbacks(unfreeze_runnable);
+                root().postDelayed(unfreeze_runnable, 300);
+            }
         }
     }
 
@@ -2536,21 +2628,25 @@ public class ModernUI {
         Preview preview = main_activity.getPreview();
         if( preview == null || preview.getCameraController() == null )
             return;
-        if( tele_lens != null && isOpen(tele_lens) ) {
-            float ratio = (float)Math.max(1.0, Math.min(SOFTWARE_ZOOM_MAX, total / tele_lens.zoom));
+        Lens open = openLens();
+        if( open != null && open.physical_id != null ) {
+            // physical lenses only have software zoom
+            float ratio = (float)Math.max(1.0, Math.min(SOFTWARE_ZOOM_MAX, total / factorOf(open)));
             preview.setSoftwareZoom(ratio);
             preview.rebaseDragZoom(ratio);
         }
         else if( preview.supportsZoom() ) {
             float min = preview.getMinZoomRatio();
             float max = preview.getZoomRatio(preview.getMaxZoom());
-            float ratio = (float)Math.max(min, Math.min(max, total));
+            float ratio = (float)Math.max(min, Math.min(max, total / factorOf(open)));
             preview.setZoomRatio(ratio);
             preview.rebaseDragZoom(ratio);
         }
     }
 
-    /** Starts an AUTO hand-off to another camera, keeping the overall zoom level. */
+    /** Starts an AUTO hand-off to another camera, keeping the overall zoom level. The current
+     *  frame is frozen over the preview while the new lens starts, so the switch doesn't flash.
+     */
     private void handOff(Lens target, double total) {
         if( target == null )
             return;
@@ -2558,7 +2654,111 @@ public class ModernUI {
             Log.d(TAG, "AUTO hand-off to " + target + " at " + total);
         handoff_in_progress = true;
         pending_total_zoom = total;
+        freezePreview();
         main_activity.userSwitchToCamera(target.logical_id, target.physical_id);
+        main_activity.getApplicationInterface().getDrawPreview().setDimPreview(false);
+    }
+
+    /** Covers the preview with a still of its current frame. */
+    private void freezePreview() {
+        try {
+            View view = main_activity.getPreview().getView();
+            if( !(view instanceof android.view.TextureView) || !(view.getParent() instanceof ViewGroup) || view.getWidth() <= 0 )
+                return;
+            android.graphics.Bitmap bitmap = ((android.view.TextureView)view).getBitmap();
+            if( bitmap == null )
+                return;
+            ViewGroup parent = (ViewGroup)view.getParent();
+            if( freeze_view == null ) {
+                freeze_view = new ImageView(main_activity);
+                freeze_view.setScaleType(ImageView.ScaleType.FIT_XY);
+                freeze_view.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            }
+            if( freeze_view.getParent() != parent ) {
+                if( freeze_view.getParent() instanceof ViewGroup )
+                    ((ViewGroup)freeze_view.getParent()).removeView(freeze_view);
+                parent.addView(freeze_view, parent.indexOfChild(view) + 1, new ViewGroup.LayoutParams(view.getWidth(), view.getHeight()));
+            }
+            else {
+                ViewGroup.LayoutParams lp = freeze_view.getLayoutParams();
+                lp.width = view.getWidth();
+                lp.height = view.getHeight();
+                freeze_view.setLayoutParams(lp);
+            }
+            freeze_view.setImageBitmap(bitmap);
+            freeze_view.setTranslationX(view.getLeft() + view.getTranslationX());
+            freeze_view.setTranslationY(view.getTop() + view.getTranslationY());
+            freeze_view.setPivotX(view.getPivotX());
+            freeze_view.setPivotY(view.getPivotY());
+            freeze_view.setScaleX(view.getScaleX());
+            freeze_view.setScaleY(view.getScaleY());
+            freeze_view.animate().cancel();
+            freeze_view.setAlpha(1.0f);
+            freeze_view.setVisibility(View.VISIBLE);
+            root().removeCallbacks(unfreeze_runnable);
+            root().postDelayed(unfreeze_runnable, 3000); // in case the camera doesn't open
+        }
+        catch(Throwable e) {
+            MyDebug.logStackTrace(TAG, "failed to freeze preview", e);
+        }
+    }
+
+    private void unfreezePreview() {
+        if( freeze_view == null || freeze_view.getVisibility() != View.VISIBLE )
+            return;
+        freeze_view.animate().cancel();
+        freeze_view.animate().alpha(0.0f).setDuration(160).withEndAction(() -> {
+            freeze_view.setVisibility(View.GONE);
+            freeze_view.setImageBitmap(null);
+        }).start();
+    }
+
+    /** Overall zoom range (relative to the main lens) the ruler and dragging cover, given the
+     *  open camera's zoom ratio range.
+     */
+    private double [] rulerRange(float min_ratio, float max_ratio) {
+        Lens open = openLens();
+        if( smartAutoActive() && !auto_chain.isEmpty() ) {
+            if( isOpen(auto_lens) )
+                auto_min_ratio = min_ratio;
+            Lens first = auto_chain.get(0);
+            Lens last = auto_chain.get(auto_chain.size() - 1);
+            double lo;
+            if( !first.auto )
+                lo = first.zoom;
+            else if( !Double.isNaN(auto_min_ratio) )
+                lo = auto_min_ratio;
+            else
+                lo = auto_lens_zooms.isEmpty() ? 1.0 : Math.min(1.0, auto_lens_zooms.get(0));
+            double hi = last.auto ? (isOpen(last) ? max_ratio : 10.0) : last.zoom * SOFTWARE_ZOOM_MAX;
+            return new double[]{lo, Math.max(hi, lo * 1.01)};
+        }
+        double factor = factorOf(open);
+        return new double[]{min_ratio * factor, max_ratio * factor};
+    }
+
+    /** The preview's top and height, in screen coordinates (ignoring software zoom scaling). */
+    private float [] previewSpan() {
+        View view = main_activity.getPreview().getView();
+        if( view == null || !(view.getParent() instanceof View) || view.getHeight() <= 0 )
+            return null;
+        int [] location = new int[2];
+        ((View)view.getParent()).getLocationOnScreen(location);
+        return new float[]{location[1] + view.getTop(), view.getHeight()};
+    }
+
+    /** Drag sensitivity at the coarsest precision: the whole zoom range spans the preview's
+     *  height less a margin at each end, so it can be crossed in one movement.
+     */
+    public float dragZoomPixelsPerLog(float min_ratio, float max_ratio) {
+        if( !views_created )
+            return -1.0f;
+        double [] range = rulerRange(min_ratio, max_ratio);
+        float [] span = previewSpan();
+        double logs = Math.log(range[1] / range[0]);
+        if( span == null || !(logs > 0.05) )
+            return -1.0f;
+        return (float)(span[1] * (1.0f - 2.0f*RULER_MARGIN) / logs);
     }
 
     static String zoomLabel(double zoom) {
@@ -2654,13 +2854,17 @@ public class ModernUI {
             main_ui.closePopup();
             // AUTO turns smart hand-off on; picking any specific lens turns it off
             prefs().edit().putBoolean(SMART_AUTO_KEY, lens.auto).apply();
-            if( isOpen(lens) ) {
-                // already open (e.g. the telephoto AUTO had handed off to): just reselect
+            // AUTO opens the lens it would use at 1x
+            Lens target = lens.auto ? autoEntryLens() : lens;
+            if( target == null )
+                target = lens;
+            if( isOpen(target) ) {
+                // already open (e.g. a lens AUTO had switched to): just reselect
                 preview.setSoftwareZoom(1.0f);
                 rebuildLensChips();
                 return;
             }
-            switchToLens(lens);
+            switchToLens(target);
         });
         attachDebug(chip, "Lens " + lens.label + (lens.sublabel != null ? " " + lens.sublabel : ""), () -> lensDebug(lens));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(wide ? ViewGroup.LayoutParams.WRAP_CONTENT : dp(42), dp(42));
@@ -2678,7 +2882,7 @@ public class ModernUI {
      */
     private void switchToLens(final Lens lens) {
         Preview preview = main_activity.getPreview();
-        double current_zoom = (selected_lens_auto && !(tele_lens != null && isOpen(tele_lens)) ? 1.0 : (tele_lens != null && isOpen(tele_lens) ? tele_lens.zoom : selected_lens_zoom)) * preview.getSoftwareZoom();
+        double current_zoom = factorOf(openLens()) * preview.getSoftwareZoom();
         if( preview.getCameraController() != null && preview.supportsZoom() )
             current_zoom *= preview.getZoomRatio();
         double target_zoom = lens.auto ? 1.0 : lens.zoom;
@@ -2712,8 +2916,10 @@ public class ModernUI {
 
     // ---------------------------------------------------------------- zoom ruler
 
-    /** Called by the preview while the user drags to zoom. In smart AUTO, also hands off between
-     *  the auto camera and the highest-power lens as the zoom crosses that lens's native zoom.
+    /** Called by the preview while the user drags to zoom. In smart AUTO, also switches lens as
+     *  the zoom crosses each lens's minimum. At the coarsest precision the ruler shows the whole
+     *  range over the preview's height (less margins), with the current zoom level at its place
+     *  on that scale; finer precision magnifies the scale around it.
      */
     public void onDragZoom(boolean active, float raw_x, float raw_y, float ratio, float intent_ratio, float min_ratio, float max_ratio, float pixels_per_log, float precision, boolean software) {
         if( !views_created )
@@ -2727,52 +2933,47 @@ public class ModernUI {
         zoom_scale.getLocationOnScreen(location);
         List<float []> segments = new ArrayList<>();
         List<String> labels = new ArrayList<>();
-        double current, range_min, range_max;
-        if( smartAutoActive() && tele_lens != null ) {
-            boolean on_tele = isOpen(tele_lens);
-            double factor = on_tele ? tele_lens.zoom : 1.0;
-            current = ratio * factor;
+        Lens open = openLens();
+        double factor = factorOf(open);
+        double current = ratio * factor;
+        double [] range = rulerRange(min_ratio, max_ratio);
+        double range_min = range[0];
+        double range_max = range[1];
+        boolean smart = smartAutoActive() && !auto_chain.isEmpty();
+        if( smart && !handoff_in_progress ) {
             double intent = intent_ratio * factor;
-            if( !on_tele )
-                auto_min_ratio = min_ratio;
-            if( !handoff_in_progress ) {
-                if( !on_tele && intent >= tele_lens.zoom )
-                    handOff(tele_lens, Math.max(intent, tele_lens.zoom));
-                else if( on_tele && intent < tele_lens.zoom * 0.98 )
-                    handOff(auto_lens, intent);
+            Lens target = autoTargetFor(intent, open);
+            if( target != null && target != open && !(target.auto && open != null && open.auto) ) {
+                // going up, start the new lens at no less than its own minimum
+                boolean up = !target.auto && target.zoom > factor;
+                double total = Math.max(range_min, Math.min(range_max, up ? Math.max(intent, target.zoom) : intent));
+                handOff(target, total);
             }
-            range_min = Double.isNaN(auto_min_ratio) ? Math.min(min_ratio * factor, auto_lens_zooms.get(0)) : auto_min_ratio;
-            range_max = tele_lens.zoom * SOFTWARE_ZOOM_MAX;
+        }
+        if( (smart || selected_lens_auto) && !auto_lens_zooms.isEmpty() ) {
             for(int i=0;i<auto_lens_zooms.size();i++) {
                 double start = i == 0 ? Math.min(range_min, auto_lens_zooms.get(0)) : auto_lens_zooms.get(i);
                 double end = i + 1 < auto_lens_zooms.size() ? auto_lens_zooms.get(i+1) : range_max;
+                if( end <= start )
+                    continue;
                 segments.add(new float[]{(float)start, (float)end});
                 labels.add(zoomLabel(auto_lens_zooms.get(i)));
             }
         }
         else {
-            // convert from the open camera's ratios to zoom relative to the main lens
-            double factor = selected_lens_auto ? 1.0 : selected_lens_zoom;
-            current = ratio * factor;
-            range_min = min_ratio * factor;
-            range_max = max_ratio * factor;
-            if( selected_lens_auto && !auto_lens_zooms.isEmpty() ) {
-                for(int i=0;i<auto_lens_zooms.size();i++) {
-                    double start = i == 0 ? Math.min(min_ratio, auto_lens_zooms.get(0)) : auto_lens_zooms.get(i);
-                    double end = i + 1 < auto_lens_zooms.size() ? auto_lens_zooms.get(i+1) : max_ratio;
-                    segments.add(new float[]{(float)start, (float)end});
-                    labels.add(zoomLabel(auto_lens_zooms.get(i)));
-                }
-            }
-            else {
-                segments.add(new float[]{(float)range_min, (float)range_max});
-                String label = zoomLabel(factor);
-                if( software )
-                    label += " " + str(R.string.uifork_digital);
-                labels.add(label);
-            }
+            segments.add(new float[]{(float)range_min, (float)range_max});
+            String label = zoomLabel(factor);
+            if( software )
+                label += " " + str(R.string.uifork_digital);
+            labels.add(label);
         }
-        zoom_scale.update(raw_y - location[1], (float)current, (float)range_min, (float)range_max, pixels_per_log, precision, segments, labels);
+        float anchor = raw_y - location[1];
+        float [] span = previewSpan();
+        if( span != null && precision > 0.0f && current > 0.0 ) {
+            float base_pixels_per_log = pixels_per_log / precision;
+            anchor = span[0] - location[1] + span[1] * RULER_MARGIN + (float)((Math.log(range_max) - Math.log(current)) * base_pixels_per_log);
+        }
+        zoom_scale.update(anchor, (float)current, (float)range_min, (float)range_max, pixels_per_log, precision, segments, labels);
     }
 
     /** Ruler fixed to the right-hand side of the screen while drag-zooming: ticks for zoom values,
