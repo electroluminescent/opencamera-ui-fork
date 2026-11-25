@@ -569,6 +569,63 @@ public class MyApplicationInterface extends BasicApplicationInterface {
         return best_size;
     }
 
+    // Open Camera UI Fork: the user's chosen output resolution for the current camera, when it
+    // differs from the capture resolution (which is the largest size with the same aspect ratio).
+    private Pair<Integer, Integer> output_resolution;
+
+    /** Returns the largest supported picture size with the same aspect ratio as output, or null
+     *  if output isn't a supported size for this camera.
+     */
+    private Pair<Integer, Integer> largestSizeWithSameAspect(Pair<Integer, Integer> output) {
+        List<CameraController.Size> sizes = main_activity.getPreview().getSupportedPictureSizes(false);
+        if( sizes == null || output.second <= 0 )
+            return null;
+        boolean supported = false;
+        for(CameraController.Size size : sizes) {
+            if( size.width == output.first && size.height == output.second ) {
+                supported = true;
+                break;
+            }
+        }
+        if( !supported )
+            return null;
+        double aspect = output.first / (double)output.second;
+        CameraController.Size best = null;
+        for(CameraController.Size size : sizes) {
+            if( size.height <= 0 )
+                continue;
+            double size_aspect = size.width / (double)size.height;
+            if( Math.abs(size_aspect - aspect) / aspect < 0.01 ) {
+                if( best == null || (long)size.width*size.height > (long)best.width*best.height )
+                    best = size;
+            }
+        }
+        return best == null ? null : new Pair<>(best.width, best.height);
+    }
+
+    /** The photo resolution the user will get in the saved file (may be smaller than the capture
+     *  resolution reported by Preview.getCurrentPictureSize()).
+     */
+    public CameraController.Size getOutputPictureSize() {
+        if( output_resolution != null && getPhotoMode() != PhotoMode.Panorama )
+            return new CameraController.Size(output_resolution.first, output_resolution.second);
+        return main_activity.getPreview().getCurrentPictureSize();
+    }
+
+    /** Returns {long edge, short edge} of the output size if photos need downsampling when saved,
+     *  otherwise null.
+     */
+    int [] getOutputResolutionForSave() {
+        if( output_resolution == null || getPhotoMode() == PhotoMode.Panorama )
+            return null;
+        CameraController.Size capture = main_activity.getPreview().getCurrentPictureSize();
+        if( capture != null && capture.width == output_resolution.first && capture.height == output_resolution.second )
+            return null;
+        int long_edge = Math.max(output_resolution.first, output_resolution.second);
+        int short_edge = Math.min(output_resolution.first, output_resolution.second);
+        return new int[]{long_edge, short_edge};
+    }
+
     @Override
     public Pair<Integer, Integer> getCameraResolutionPref(CameraResolutionConstraints constraints) {
         PhotoMode photo_mode = getPhotoMode();
@@ -608,6 +665,20 @@ public class MyApplicationInterface extends BasicApplicationInterface {
                     if( MyDebug.LOG )
                         Log.d(TAG, "resolution_value invalid format, can't parse w or h to int");
                 }
+            }
+        }
+
+        // Open Camera UI Fork: the stored resolution is the *output* size the user wants. Capture
+        // at the largest size the lens supports with the same aspect ratio, and ImageSaver
+        // downsamples to the output size when saving.
+        output_resolution = null;
+        if( result != null ) {
+            Pair<Integer, Integer> capture = largestSizeWithSameAspect(result);
+            if( capture != null ) {
+                output_resolution = result;
+                result = capture;
+                if( MyDebug.LOG )
+                    Log.d(TAG, "output " + output_resolution.first + "x" + output_resolution.second + ", capture " + capture.first + "x" + capture.second);
             }
         }
 
@@ -3116,6 +3187,11 @@ public class MyApplicationInterface extends BasicApplicationInterface {
     public void setCameraResolutionPref(int width, int height) {
         if( getPhotoMode() == PhotoMode.Panorama ) {
             // in Panorama mode we'll have set a different resolution to the user setting, so don't want that to then be saved!
+            return;
+        }
+        if( output_resolution != null ) {
+            // Open Camera UI Fork: the preference holds the user's output size, which differs from
+            // the capture size - don't overwrite it
             return;
         }
         String resolution_value = width + " " + height;

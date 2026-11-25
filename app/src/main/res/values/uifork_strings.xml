@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Open Camera UI Fork -->
+    <string name="uifork_mode_photo">PHOTO</string>
+    <string name="uifork_mode_video">VIDEO</string>
+    <string name="uifork_mode_more">MORE</string>
+    <string name="uifork_timer">Timer</string>
+    <string name="uifork_photo_size">Photo output resolution</string>
+    <string name="uifork_lens">Lens</string>
+    <string name="uifork_lens_auto">AUTO</string>
+</resources>

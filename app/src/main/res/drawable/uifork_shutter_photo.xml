@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Open Camera UI Fork: plain white shutter disc -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="oval">
+            <solid android:color="#FFD6D6D6" />
+            <size android:width="80dp" android:height="80dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#FFFFFFFF" />
+            <size android:width="80dp" android:height="80dp" />
+        </shape>
+    </item>
+</selector>

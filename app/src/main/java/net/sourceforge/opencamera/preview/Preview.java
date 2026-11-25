@@ -653,6 +653,7 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
         if( event.getAction() != MotionEvent.ACTION_UP ) {
             if( event.getAction() == MotionEvent.ACTION_DOWN && event.getPointerCount() == 1 ) {
                 touch_was_multitouch = false;
+                drag_zoom_active = false;
                 if( event.getAction() == MotionEvent.ACTION_DOWN ) {
                     touch_orig_x = event.getX();
                     touch_orig_y = event.getY();
@@ -660,11 +661,19 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
                         Log.d(TAG, "touch down at " + touch_orig_x + " , " + touch_orig_y);
                 }
             }
+            else if( event.getAction() == MotionEvent.ACTION_MOVE && !touch_was_multitouch ) {
+                handleDragZoom(event);
+            }
             return true;
         }
         // now only have to handle MotionEvent.ACTION_UP from this point onwards
 
         if( touch_was_multitouch ) {
+            return true;
+        }
+        if( drag_zoom_active ) {
+            // the touch was a zoom drag, not a tap
+            drag_zoom_active = false;
             return true;
         }
 
@@ -696,6 +705,52 @@ public class Preview implements SurfaceHolder.Callback, TextureView.SurfaceTextu
         }
 
         return handleSingleTouch(event, was_paused);
+    }
+
+    // Open Camera UI Fork: dragging up/down on the viewfinder zooms within the current camera.
+    // This only moves along the open camera's own zoom range, so it switches lenses only when
+    // the "auto" (logical multi-camera) lens is selected.
+    private boolean drag_zoom_active;
+    private float drag_zoom_start_ratio;
+
+    private void handleDragZoom(MotionEvent event) {
+        if( !has_zoom || camera_controller == null || zoom_ratios == null || zoom_ratios.isEmpty() )
+            return;
+        float dy = touch_orig_y - event.getY(); // dragging up zooms in
+        float dx = event.getX() - touch_orig_x;
+        float density = getResources().getDisplayMetrics().density;
+        float slop = 24 * density;
+        if( !drag_zoom_active ) {
+            if( Math.abs(dy) < slop || Math.abs(dy) < 1.5f*Math.abs(dx) )
+                return;
+            drag_zoom_active = true;
+            drag_zoom_start_ratio = zoom_ratios.get(camera_controller.getZoom())/100.0f;
+            cancelAutoFocus();
+        }
+        float min_ratio = zoom_ratios.get(0)/100.0f;
+        float max_ratio = zoom_ratios.get(max_zoom_factor)/100.0f;
+        if( max_ratio <= min_ratio )
+            return;
+        // dragging 60% of the screen height covers the whole zoom range (logarithmically)
+        float span = 0.6f * getResources().getDisplayMetrics().heightPixels;
+        float effective_dy = dy - Math.signum(dy) * slop;
+        double log_ratio = Math.log(drag_zoom_start_ratio) + Math.log(max_ratio/min_ratio) * effective_dy / span;
+        float target = (float)Math.exp(log_ratio);
+        target = Math.max(min_ratio, Math.min(max_ratio, target));
+        int target_ratio = Math.round(target*100.0f);
+        int best_index = 0;
+        int best_diff = Integer.MAX_VALUE;
+        for(int i=0;i<=max_zoom_factor && i<zoom_ratios.size();i++) {
+            int diff = Math.abs(zoom_ratios.get(i) - target_ratio);
+            if( diff < best_diff ) {
+                best_diff = diff;
+                best_index = i;
+            }
+        }
+        if( best_index != camera_controller.getZoom() ) {
+            zoomTo(best_index, false, false);
+            applicationInterface.multitouchZoom(best_index);
+        }
     }
 
     private boolean handleSingleTouch(MotionEvent event, boolean was_paused) {

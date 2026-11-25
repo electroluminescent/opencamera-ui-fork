@@ -385,7 +385,8 @@ public class PopupView extends LinearLayout {
                 // picture_sizes is sorted high to low, but we want to order low to high
                 Collections.reverse(picture_sizes);
                 picture_size_index = -1;
-                CameraController.Size current_picture_size = preview.getCurrentPictureSize();
+                // Open Camera UI Fork: highlight the output resolution, not the (larger) capture resolution
+                CameraController.Size current_picture_size = main_activity.getApplicationInterface().getOutputPictureSize();
                 final List<String> picture_size_strings = new ArrayList<>();
                 for(int i=0;i<picture_sizes.size();i++) {
                     CameraController.Size picture_size = picture_sizes.get(i);

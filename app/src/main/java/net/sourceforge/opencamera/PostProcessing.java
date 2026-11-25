@@ -2,6 +2,7 @@ package net.sourceforge.opencamera;
 
 import android.annotation.SuppressLint;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
@@ -506,6 +507,81 @@ public class PostProcessing {
         return bitmap;
     }
 
+    /** Open Camera UI Fork: scales the image down so its long edge matches
+     *  request.output_long_edge. If bitmap is null, the JPEG is only decoded when a resize is
+     *  needed, using JPEG subsampling (inSampleSize) first to limit memory on very high
+     *  resolution sensors, followed by filtered halving steps to avoid aliasing.
+     */
+    private Bitmap downsampleToOutput(final ImageSaver.Request request, byte [] data, Bitmap bitmap) throws IOException {
+        int width, height;
+        if( bitmap != null ) {
+            width = bitmap.getWidth();
+            height = bitmap.getHeight();
+        }
+        else {
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(data, 0, data.length, options);
+            width = options.outWidth;
+            height = options.outHeight;
+        }
+        if( width <= 0 || height <= 0 )
+            return bitmap;
+        int long_edge = Math.max(width, height);
+        if( request.output_long_edge >= long_edge * 0.98f ) {
+            // already at (or below) the output size - never upscale
+            return bitmap;
+        }
+
+        boolean own_source = false;
+        if( bitmap == null ) {
+            int sample_size = 1;
+            while( long_edge / (sample_size * 2) >= request.output_long_edge )
+                sample_size *= 2;
+            if( MyDebug.LOG )
+                Log.d(TAG, "downsample: decode with inSampleSize " + sample_size);
+            bitmap = ImageUtils.loadBitmap(data, true, sample_size);
+            if( bitmap == null ) {
+                System.gc();
+                throw new IOException();
+            }
+            Bitmap rotated = ImageUtils.rotateForExif(bitmap, data);
+            if( rotated != bitmap ) {
+                bitmap.recycle();
+                bitmap = rotated;
+            }
+            own_source = true;
+        }
+
+        float scale = request.output_long_edge / (float)Math.max(bitmap.getWidth(), bitmap.getHeight());
+        int target_w = Math.max(1, Math.round(bitmap.getWidth() * scale));
+        int target_h = Math.max(1, Math.round(bitmap.getHeight() * scale));
+        if( MyDebug.LOG )
+            Log.d(TAG, "downsample " + bitmap.getWidth() + "x" + bitmap.getHeight() + " to " + target_w + "x" + target_h);
+
+        Bitmap current = bitmap;
+        while( current.getWidth() / 2 >= target_w && current.getHeight() / 2 >= target_h ) {
+            Bitmap half = Bitmap.createScaledBitmap(current, current.getWidth() / 2, current.getHeight() / 2, true);
+            if( current != bitmap || own_source )
+                current.recycle();
+            current = half;
+        }
+        if( current.getWidth() != target_w || current.getHeight() != target_h ) {
+            Bitmap scaled = Bitmap.createScaledBitmap(current, target_w, target_h, true);
+            if( scaled != current && (current != bitmap || own_source) )
+                current.recycle();
+            current = scaled;
+        }
+        if( !current.isMutable() ) {
+            // later stages (e.g. photo stamp) draw onto the bitmap
+            Bitmap mutable = current.copy(Bitmap.Config.ARGB_8888, true);
+            if( current != bitmap || own_source )
+                current.recycle();
+            current = mutable;
+        }
+        return current;
+    }
+
     static class PostProcessBitmapResult {
         final Bitmap bitmap;
 
@@ -528,6 +604,15 @@ public class PostProcessing {
                     Log.d(TAG, "rotate pre-existing bitmap for exif tags?");
                 bitmap = ImageUtils.rotateForExif(bitmap, data);
             }
+        }
+
+        // Open Camera UI Fork: photos are captured at the lens's largest size for the chosen
+        // aspect ratio; downsample to the user's output resolution
+        if( request.output_long_edge > 0 && request.process_type != ImageSaver.Request.ProcessType.PANORAMA ) {
+            bitmap = downsampleToOutput(request, data, bitmap);
+        }
+        if( MyDebug.LOG ) {
+            Log.d(TAG, "Save single image performance: time after downsample: " + (System.currentTimeMillis() - time_s));
         }
 
         if( request.do_auto_stabilise ) {

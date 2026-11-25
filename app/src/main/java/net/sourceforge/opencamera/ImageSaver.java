@@ -166,6 +166,9 @@ public class ImageSaver extends Thread {
             KEEP_DATETIME // remove all device exif tags except datetime tags
         }
         final RemoveDeviceExif remove_device_exif;
+        // Open Camera UI Fork: output size to downsample to (long/short edge, pixels); 0 = keep capture size
+        int output_long_edge;
+        int output_short_edge;
         final boolean store_location;
         final Location location;
         final boolean store_geo_direction;
@@ -258,7 +261,7 @@ public class ImageSaver extends Thread {
          *  data will not be copied.
          */
         Request copy() {
-            return new Request(this.type,
+            Request copy_request = new Request(this.type,
                     this.process_type,
                     this.force_suffix,
                     this.suffix_offset,
@@ -286,6 +289,9 @@ public class ImageSaver extends Thread {
                     this.custom_tag_artist,
                     this.custom_tag_copyright,
                     this.sample_factor);
+            copy_request.output_long_edge = this.output_long_edge;
+            copy_request.output_short_edge = this.output_short_edge;
+            return copy_request;
         }
     }
 
@@ -786,6 +792,18 @@ public class ImageSaver extends Thread {
                 custom_tag_artist,
                 custom_tag_copyright,
                 sample_factor);
+        setOutputResolution(pending_image_average_request);
+    }
+
+    /** Open Camera UI Fork: record the user's output resolution on the request, so the saved
+     *  image is downsampled from the full capture resolution.
+     */
+    private void setOutputResolution(Request request) {
+        int [] output = main_activity.getApplicationInterface().getOutputResolutionForSave();
+        if( output != null ) {
+            request.output_long_edge = output[0];
+            request.output_short_edge = output[1];
+        }
     }
 
     void addImageBatch(byte [] image, float [] gyro_rotation_matrix) {
@@ -907,6 +925,7 @@ public class ImageSaver extends Thread {
                 custom_tag_artist,
                 custom_tag_copyright,
                 sample_factor);
+        setOutputResolution(request);
 
         if( do_in_background ) {
             if( MyDebug.LOG )

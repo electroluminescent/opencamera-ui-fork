@@ -110,9 +110,13 @@ public class MainUI {
         this.main_activity = main_activity;
 
         this.onScreenIcons = new OnScreenIcons(main_activity);
+        this.modernUI = new ModernUI(main_activity, this);
 
         this.setSeekbarColors();
     }
+
+    // Open Camera UI Fork: portrait layout layer
+    private final ModernUI modernUI;
 
     public OnScreenIcons getOnScreenIcons() {
         return this.onScreenIcons;
@@ -427,6 +431,7 @@ public class MainUI {
 
         if( !popup_container_only )
         {
+            modernUI.beforeLayout();
             // reset:
             top_icon = null;
 
@@ -921,6 +926,7 @@ public class MainUI {
         }
 
         if( !popup_container_only ) {
+            modernUI.apply(system_orientation_portrait, navigation_gap);
             setTakePhotoIcon();
             // no need to call setSwitchCameraContentDescription()
         }
@@ -1094,6 +1100,7 @@ public class MainUI {
             view.setImageResource(resource);
             view.setContentDescription( main_activity.getResources().getString(content_description) );
             view.setTag(resource); // for testing
+            modernUI.onTakePhotoIcon(view, resource);
 
             view = main_activity.findViewById(R.id.switch_video);
             view.setContentDescription( main_activity.getResources().getString(switch_video_content_description) );
@@ -1108,6 +1115,7 @@ public class MainUI {
     public void setSwitchCameraContentDescription() {
         if( MyDebug.LOG )
             Log.d(TAG, "setSwitchCameraContentDescription()");
+        modernUI.rebuildLensChips(); // called whenever a camera is opened
         if( main_activity.getPreview() != null && main_activity.getPreview().canSwitchCamera() ) {
             ImageButton view = main_activity.findViewById(R.id.switch_camera);
             int content_description;
@@ -2100,6 +2108,7 @@ public class MainUI {
     public void setPopupIcon() {
         if( MyDebug.LOG )
             Log.d(TAG, "setPopupIcon");
+        modernUI.refresh(); // flash state may have changed
         ImageButton popup = main_activity.findViewById(R.id.popup);
         String flash_value = main_activity.getPreview().getCurrentFlashValue();
         if( MyDebug.LOG )
