@@ -612,6 +612,19 @@ public class MyApplicationInterface extends BasicApplicationInterface {
         return main_activity.getPreview().getCurrentPictureSize();
     }
 
+    @Override
+    public void onDragZoom(boolean active, float raw_x, float raw_y, float ratio, float min_ratio, float max_ratio, float pixels_per_log, float precision, boolean software) {
+        main_activity.getMainUI().getModernUI().onDragZoom(active, raw_x, raw_y, ratio, min_ratio, max_ratio, pixels_per_log, precision, software);
+    }
+
+    /** Open Camera UI Fork: software (crop) zoom to apply to a photo being saved, 1 if none. */
+    float getSoftwareZoomForSave() {
+        Preview preview = main_activity.getPreview();
+        if( preview.isVideo() || getPhotoMode() == PhotoMode.Panorama )
+            return 1.0f;
+        return preview.getSoftwareZoom();
+    }
+
     /** Returns {long edge, short edge} of the output size if photos need downsampling when saved,
      *  otherwise null.
      */
@@ -2201,6 +2214,7 @@ public class MyApplicationInterface extends BasicApplicationInterface {
     public void touchEvent(MotionEvent event) {
         main_activity.getMainUI().closeExposureUI();
         main_activity.getMainUI().closePopup();
+        main_activity.getMainUI().getModernUI().closeChooser();
         if( main_activity.usingKitKatImmersiveMode() ) {
             main_activity.setImmersiveMode(false);
         }

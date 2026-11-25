@@ -169,6 +169,7 @@ public class ImageSaver extends Thread {
         // Open Camera UI Fork: output size to downsample to (long/short edge, pixels); 0 = keep capture size
         int output_long_edge;
         int output_short_edge;
+        float software_zoom = 1.0f; // Open Camera UI Fork: centre crop factor for software zoom
         final boolean store_location;
         final Location location;
         final boolean store_geo_direction;
@@ -291,6 +292,7 @@ public class ImageSaver extends Thread {
                     this.sample_factor);
             copy_request.output_long_edge = this.output_long_edge;
             copy_request.output_short_edge = this.output_short_edge;
+            copy_request.software_zoom = this.software_zoom;
             return copy_request;
         }
     }
@@ -804,6 +806,7 @@ public class ImageSaver extends Thread {
             request.output_long_edge = output[0];
             request.output_short_edge = output[1];
         }
+        request.software_zoom = main_activity.getApplicationInterface().getSoftwareZoomForSave();
     }
 
     void addImageBatch(byte [] image, float [] gyro_rotation_matrix) {

@@ -939,6 +939,16 @@ public class MyPreferenceFragment extends PreferenceFragment implements OnShared
                 Log.d(TAG, "backgroundColor: " + r + " , " + g + " , " + b);
             }*/
             fragment.getView().setBackgroundColor(backgroundColor);
+            // Open Camera UI Fork: dense material list without dividers
+            View list = fragment.getView().findViewById(android.R.id.list);
+            if( list instanceof android.widget.ListView ) {
+                android.widget.ListView list_view = (android.widget.ListView)list;
+                list_view.setDivider(null);
+                list_view.setDividerHeight(0);
+                float density = fragment.getResources().getDisplayMetrics().density;
+                list_view.setPadding((int)(6 * density), (int)(4 * density), (int)(6 * density), list_view.getPaddingBottom());
+                list_view.setClipToPadding(false);
+            }
         }
     }
 

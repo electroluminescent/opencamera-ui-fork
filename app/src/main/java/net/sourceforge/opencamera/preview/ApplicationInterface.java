@@ -233,6 +233,13 @@ public interface ApplicationInterface {
 
     // methods that request actions
     void multitouchZoom(int new_zoom); // indicates that the zoom has changed due to multitouch gesture on preview
+    /** Open Camera UI Fork: called while the user drags on the preview to zoom, and once with
+     *  active == false when the drag ends. raw_x/raw_y are screen coordinates; ratio, min_ratio and
+     *  max_ratio are relative to the open camera; pixels_per_log is how many pixels of drag change
+     *  the natural log of the ratio by 1; software is true if this is software (crop) zoom.
+     */
+    default void onDragZoom(boolean active, float raw_x, float raw_y, float ratio, float min_ratio, float max_ratio, float pixels_per_log, float precision, boolean software) {
+    }
     void requestTakePhoto(); // requesting taking a photo (due to single/double tap, if either getTouchCapturePref(), getDoubleTouchCapturePref() options are enabled)
     // the set/clear*Pref() methods are called if Preview decides to override the requested pref (because Camera device doesn't support requested pref) (clear*Pref() is called if the feature isn't supported at all)
     // the application can use this information to update its preferences

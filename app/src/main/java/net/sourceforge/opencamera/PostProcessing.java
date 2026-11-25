@@ -3,6 +3,8 @@ package net.sourceforge.opencamera;
 import android.annotation.SuppressLint;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.BitmapRegionDecoder;
+import android.graphics.Rect;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
@@ -507,12 +509,15 @@ public class PostProcessing {
         return bitmap;
     }
 
-    /** Open Camera UI Fork: scales the image down so its long edge matches
-     *  request.output_long_edge. If bitmap is null, the JPEG is only decoded when a resize is
-     *  needed, using JPEG subsampling (inSampleSize) first to limit memory on very high
-     *  resolution sensors, followed by filtered halving steps to avoid aliasing.
+    /** Open Camera UI Fork: applies software zoom (a centre crop) and scales the image to the
+     *  user's output resolution (request.output_long_edge, or the capture resolution if 0). If
+     *  bitmap is null the JPEG is only decoded when needed - just the cropped region, using JPEG
+     *  subsampling (inSampleSize) to limit memory on very high resolution sensors - followed by
+     *  filtered halving steps to avoid aliasing.
      */
-    private Bitmap downsampleToOutput(final ImageSaver.Request request, byte [] data, Bitmap bitmap) throws IOException {
+    @SuppressWarnings("deprecation")
+    private Bitmap processOutputSize(final ImageSaver.Request request, byte [] data, Bitmap bitmap) throws IOException {
+        final float zoom = request.software_zoom > 1.01f ? request.software_zoom : 1.0f;
         int width, height;
         if( bitmap != null ) {
             width = bitmap.getWidth();
@@ -527,20 +532,41 @@ public class PostProcessing {
         }
         if( width <= 0 || height <= 0 )
             return bitmap;
-        int long_edge = Math.max(width, height);
-        if( request.output_long_edge >= long_edge * 0.98f ) {
-            // already at (or below) the output size - never upscale
+        final int long_edge = Math.max(width, height);
+        final int target_long = request.output_long_edge > 0 ? request.output_long_edge : long_edge;
+        if( zoom == 1.0f && target_long >= long_edge * 0.98f ) {
+            // nothing to do - never upscale an unzoomed photo
             return bitmap;
         }
 
-        boolean own_source = false;
+        final Bitmap original = bitmap;
+        boolean own_source;
         if( bitmap == null ) {
+            int crop_w = Math.max(1, Math.round(width / zoom));
+            int crop_h = Math.max(1, Math.round(height / zoom));
+            int crop_long = Math.max(crop_w, crop_h);
             int sample_size = 1;
-            while( long_edge / (sample_size * 2) >= request.output_long_edge )
+            while( crop_long / (sample_size * 2) >= target_long )
                 sample_size *= 2;
             if( MyDebug.LOG )
-                Log.d(TAG, "downsample: decode with inSampleSize " + sample_size);
-            bitmap = ImageUtils.loadBitmap(data, true, sample_size);
+                Log.d(TAG, "processOutputSize: zoom " + zoom + ", inSampleSize " + sample_size);
+            if( zoom > 1.0f ) {
+                // a centre crop is the same whatever the exif orientation, so crop the raw JPEG
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inSampleSize = sample_size;
+                BitmapRegionDecoder decoder = BitmapRegionDecoder.newInstance(data, 0, data.length, false);
+                try {
+                    int left = (width - crop_w)/2;
+                    int top = (height - crop_h)/2;
+                    bitmap = decoder.decodeRegion(new Rect(left, top, left + crop_w, top + crop_h), options);
+                }
+                finally {
+                    decoder.recycle();
+                }
+            }
+            else {
+                bitmap = ImageUtils.loadBitmap(data, true, sample_size);
+            }
             if( bitmap == null ) {
                 System.gc();
                 throw new IOException();
@@ -552,30 +578,38 @@ public class PostProcessing {
             }
             own_source = true;
         }
+        else {
+            if( zoom > 1.0f ) {
+                int crop_w = Math.max(1, Math.round(bitmap.getWidth() / zoom));
+                int crop_h = Math.max(1, Math.round(bitmap.getHeight() / zoom));
+                bitmap = Bitmap.createBitmap(bitmap, (bitmap.getWidth() - crop_w)/2, (bitmap.getHeight() - crop_h)/2, crop_w, crop_h);
+            }
+            own_source = bitmap != original;
+        }
 
-        float scale = request.output_long_edge / (float)Math.max(bitmap.getWidth(), bitmap.getHeight());
+        float scale = target_long / (float)Math.max(bitmap.getWidth(), bitmap.getHeight());
         int target_w = Math.max(1, Math.round(bitmap.getWidth() * scale));
         int target_h = Math.max(1, Math.round(bitmap.getHeight() * scale));
         if( MyDebug.LOG )
-            Log.d(TAG, "downsample " + bitmap.getWidth() + "x" + bitmap.getHeight() + " to " + target_w + "x" + target_h);
+            Log.d(TAG, "processOutputSize: " + bitmap.getWidth() + "x" + bitmap.getHeight() + " to " + target_w + "x" + target_h);
 
         Bitmap current = bitmap;
         while( current.getWidth() / 2 >= target_w && current.getHeight() / 2 >= target_h ) {
             Bitmap half = Bitmap.createScaledBitmap(current, current.getWidth() / 2, current.getHeight() / 2, true);
-            if( current != bitmap || own_source )
+            if( current != original && (current != bitmap || own_source) )
                 current.recycle();
             current = half;
         }
         if( current.getWidth() != target_w || current.getHeight() != target_h ) {
             Bitmap scaled = Bitmap.createScaledBitmap(current, target_w, target_h, true);
-            if( scaled != current && (current != bitmap || own_source) )
+            if( scaled != current && current != original && (current != bitmap || own_source) )
                 current.recycle();
             current = scaled;
         }
         if( !current.isMutable() ) {
             // later stages (e.g. photo stamp) draw onto the bitmap
             Bitmap mutable = current.copy(Bitmap.Config.ARGB_8888, true);
-            if( current != bitmap || own_source )
+            if( current != original )
                 current.recycle();
             current = mutable;
         }
@@ -608,8 +642,8 @@ public class PostProcessing {
 
         // Open Camera UI Fork: photos are captured at the lens's largest size for the chosen
         // aspect ratio; downsample to the user's output resolution
-        if( request.output_long_edge > 0 && request.process_type != ImageSaver.Request.ProcessType.PANORAMA ) {
-            bitmap = downsampleToOutput(request, data, bitmap);
+        if( (request.output_long_edge > 0 || request.software_zoom > 1.01f) && request.process_type != ImageSaver.Request.ProcessType.PANORAMA ) {
+            bitmap = processOutputSize(request, data, bitmap);
         }
         if( MyDebug.LOG ) {
             Log.d(TAG, "Save single image performance: time after downsample: " + (System.currentTimeMillis() - time_s));

@@ -21,6 +21,28 @@
         <item name="android:windowActionBar">false</item>
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowContentOverlay">@null</item>
+        <!-- Open Camera UI Fork: material dark, dense lists (settings screens and dialogs) -->
+        <item name="colorAccent">@color/uifork_accent</item>
+        <item name="android:colorAccent">@color/uifork_accent</item>
+        <item name="android:colorBackground">@color/uifork_surface</item>
+        <item name="android:listPreferredItemHeightSmall">44dp</item>
+        <item name="android:listPreferredItemHeight">52dp</item>
+        <item name="android:listPreferredItemPaddingStart">18dp</item>
+        <item name="android:listPreferredItemPaddingEnd">18dp</item>
+        <item name="android:listPreferredItemPaddingLeft">18dp</item>
+        <item name="android:listPreferredItemPaddingRight">18dp</item>
+        <item name="android:textAppearanceListItem">@style/UiForkListItem</item>
+        <item name="android:textAppearanceListItemSecondary">@style/UiForkListItemSecondary</item>
+        <item name="android:textAppearanceListItemSmall">@style/UiForkListItem</item>
+    </style>
+
+    <style name="UiForkListItem" parent="@android:style/TextAppearance.Material.Subhead">
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <style name="UiForkListItemSecondary" parent="@android:style/TextAppearance.Material.Body1">
+        <item name="android:textSize">12.5sp</item>
+        <item name="android:textColor">?android:attr/textColorSecondary</item>
     </style>
 
     <style name="DialogAnimation">

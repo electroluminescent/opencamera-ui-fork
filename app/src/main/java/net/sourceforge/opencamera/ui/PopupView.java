@@ -102,6 +102,14 @@ public class PopupView extends LinearLayout {
             total_width_dp = max_width_dp;
             small_screen = true;
         }
+        // Open Camera UI Fork: in the portrait layout this is a full-width bottom sheet, and
+        // flash, timer, resolution and photo modes live in the quick bar / mode carousel instead
+        final boolean modern = main_activity.getMainUI().getModernUI().isPortraitActive();
+        if( modern ) {
+            float screen_w_dp = getResources().getDisplayMetrics().widthPixels / scale;
+            total_width_dp = Math.min(440, (int)screen_w_dp - 40);
+            small_screen = false;
+        }
         if( MyDebug.LOG ) {
             Log.d(TAG, "max_width_dp: " + max_width_dp);
             Log.d(TAG, "total_width_dp: " + total_width_dp);
@@ -123,7 +131,7 @@ public class PopupView extends LinearLayout {
         if( MyDebug.LOG )
             Log.d(TAG, "PopupView time 2: " + (System.nanoTime() - debug_time));
 
-        if( !main_activity.getMainUI().getOnScreenIcons().showCycleFlashIcon() )
+        if( !main_activity.getMainUI().getOnScreenIcons().showCycleFlashIcon() && !modern )
         {
             List<String> supported_flash_values = preview.getSupportedFlashValues();
             if( preview.isVideo() && supported_flash_values != null ) {
@@ -245,7 +253,7 @@ public class PopupView extends LinearLayout {
                 // only show photo modes when in photo mode, not video mode!
                 // (photo modes not supported for photo snapshot whilst recording video)
             }
-            else if( photo_modes.size() > 1 ) {
+            else if( photo_modes.size() > 1 && !modern ) {
                 String current_mode = null;
                 for(int i=0;i<photo_modes.size() && current_mode==null;i++) {
                     if( photo_mode_values.get(i) == photo_mode ) {
@@ -376,7 +384,7 @@ public class PopupView extends LinearLayout {
             if( MyDebug.LOG )
                 Log.d(TAG, "PopupView time 8: " + (System.nanoTime() - debug_time));
 
-            if( !preview.isVideo() && photo_mode != MyApplicationInterface.PhotoMode.Panorama ) {
+            if( !preview.isVideo() && photo_mode != MyApplicationInterface.PhotoMode.Panorama && !modern ) {
                 // Only show photo resolutions in photo mode - even if photo snapshots whilst recording video is supported, the
                 // resolutions for that won't match what the user has requested for photo mode resolutions.
                 // And Panorama mode chooses its own resolution.
@@ -867,7 +875,7 @@ public class PopupView extends LinearLayout {
                 }
             }
 
-            if( photo_mode != MyApplicationInterface.PhotoMode.Panorama ) {
+            if( photo_mode != MyApplicationInterface.PhotoMode.Panorama && !modern ) {
                 // timer not supported with panorama
 
                 final String [] timer_values = getResources().getStringArray(R.array.preference_timer_values);
@@ -1479,7 +1487,7 @@ public class PopupView extends LinearLayout {
                     params.width = button_width;
                     // be careful of making the height too smaller, as harder to touch buttons; remember that this also affects the
                     // ISO buttons on exposure panel, and not just the main popup!
-                    params.height = (int) (55 * ((resource != -1) ? scale : scale_font) + 0.5f); // convert dps to pixels
+                    params.height = (int) (46 * ((resource != -1) ? scale : scale_font) + 0.5f); // convert dps to pixels (Open Camera UI Fork: denser)
                     view.setLayoutParams(params);
 
                     view.setContentDescription(button_string);
@@ -1555,6 +1563,17 @@ public class PopupView extends LinearLayout {
 
     static void setButtonSelected(View view, boolean selected) {
         view.setAlpha(selected ? ALPHA_BUTTON_SELECTED : ALPHA_BUTTON);
+        // Open Camera UI Fork: material chip highlight behind the selected option
+        float density = view.getResources().getDisplayMetrics().density;
+        if( selected ) {
+            android.graphics.drawable.GradientDrawable chip = new android.graphics.drawable.GradientDrawable();
+            chip.setColor(0xFF3D4660);
+            chip.setCornerRadius(12 * density);
+            view.setBackground(new android.graphics.drawable.InsetDrawable(chip, (int)(3 * density)));
+        }
+        else {
+            view.setBackgroundColor(Color.TRANSPARENT);
+        }
     }
 
     private void addTitleToPopup(final String title) {
@@ -1564,9 +1583,16 @@ public class PopupView extends LinearLayout {
         final View view = LayoutInflater.from(this.getContext()).inflate(R.layout.popupview_textview, null);
         final TextView text_view = view.findViewById(R.id.text_view);
 
-        text_view.setText(title + ":");
-        text_view.setTextSize(TypedValue.COMPLEX_UNIT_SP, title_text_size_dip);
+        // Open Camera UI Fork: material section header
+        float density = getResources().getDisplayMetrics().density;
+        text_view.setText(title.toUpperCase(java.util.Locale.getDefault()));
+        text_view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         text_view.setTypeface(null, Typeface.BOLD);
+        text_view.setTextColor(0xFFAEB8D8);
+        text_view.setLetterSpacing(0.08f);
+        text_view.setBackgroundColor(Color.TRANSPARENT);
+        text_view.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        text_view.setPadding((int)(16 * density), (int)(14 * density), (int)(16 * density), (int)(4 * density));
         //text_view.setBackgroundColor(Color.GRAY); // debug
         this.addView(text_view);
         if( MyDebug.LOG )

@@ -118,6 +118,10 @@ public class MainUI {
     // Open Camera UI Fork: portrait layout layer
     private final ModernUI modernUI;
 
+    public ModernUI getModernUI() {
+        return this.modernUI;
+    }
+
     public OnScreenIcons getOnScreenIcons() {
         return this.onScreenIcons;
     }
@@ -902,6 +906,7 @@ public class MainUI {
                 layoutParams.height = display_height;
             }
             view.setLayoutParams(layoutParams);
+            modernUI.layoutPopup(view); // Open Camera UI Fork: bottom sheet in portrait
 
             //setPopupViewRotation(ui_rotation, display_height);
             view.getViewTreeObserver().addOnGlobalLayoutListener(
